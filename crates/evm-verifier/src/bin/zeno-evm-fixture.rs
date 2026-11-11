@@ -4,8 +4,8 @@
 //!
 //! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--mode transparent|onchain]`
 //!
-//! `onchain` uses a locally generated (test-only) KZG reference string and
-//! Groth16 decider keys and emits the `finalizeWithProof` flow.
+//! `onchain` loads the KZG reference string from a small ceremony-format
+//! `.ptau` file, uses locally generated (test-only) Groth16 decider keys and emits the `finalizeWithProof` flow.
 
 use ark_bn254::Fr;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
@@ -65,7 +65,9 @@ fn main() {
             .num_vars
             .max(shape.num_constraints)
             .next_power_of_two();
-        let srs = Srs::insecure_for_testing(len, &mut rng);
+        // A real ceremony-format file (snarkjs, power 7, two contributions).
+        const PTAU: &[u8] = include_bytes!("../../fixtures/pot7_test.ptau");
+        let srs = Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau");
         EvmParams::setup_kzg(shape, b"zeno-llull/evm-fixture", &srs)
     } else {
         EvmParams::setup(shape, b"zeno-llull/evm-fixture")

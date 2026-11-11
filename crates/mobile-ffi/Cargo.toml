@@ -1,0 +1,21 @@
+[package]
+name = "mobile-ffi"
+description = "Zeno-Llull native SDK: Swift, Kotlin and Python bindings generated with UniFFI"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "zenollull"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+sdk-bindings = { path = "../sdk-bindings", features = ["parallel"] }
+zeno-license = { path = "../zeno-license", default-features = false }
+ark-ff.workspace = true
+rand.workspace = true
+uniffi = { version = "0.32", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"

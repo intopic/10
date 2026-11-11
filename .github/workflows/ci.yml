@@ -105,6 +105,34 @@ jobs:
       - name: Pay-per-proof flow against the container
         run: ./scripts/smoke-cloud-prover.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  native-sdk:
+    name: SDK native (Swift / Kotlin / Python) — UniFFI + test Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: ./scripts/build-native-sdk.sh
+      - name: IVC + succinct proof + license through the generated bindings
+        run: |
+          cargo build --release -p zeno-license
+          eval "$(./target/release/zeno-license keygen)"
+          export ZENO_LICENSE_PRIVATE_KEY
+          python3 sdk/native/test/test_sdk.py \
+            "$(./target/release/zeno-license issue --customer ci --plan enterprise --days 1)" \
+            "$ZENO_LICENSE_PUBLIC_KEY" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Type-check the generated Swift bindings
+        run: |
+          cd sdk/native/dist/swift
+          swiftc -typecheck -module-name zenollull -import-objc-header zenollullFFI.h zenollull.swift
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zenollull-native-sdk
+          path: sdk/native/dist
+
   kpi:
     name: KPI — fold t=100, IVC, memorie
     runs-on: ubuntu-latest

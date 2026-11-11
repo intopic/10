@@ -10,9 +10,9 @@
 //! the application circuit.
 
 use alloc::vec::Vec;
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective as G1, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective as G1, G2Affine, G2Projective};
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
-use ark_ff::{Field, UniformRand, Zero};
+use ark_ff::{BigInt, BigInteger, Field, PrimeField, UniformRand, Zero};
 use ark_std::rand::RngCore;
 use llull_folder::{pedersen::hash_to_curve, CommitmentKey};
 
@@ -44,6 +44,89 @@ impl Srs {
         }
     }
 
+    /// Loads the first `n` powers from a Powers-of-Tau file in snarkjs'
+    /// `.ptau` format (e.g. the Perpetual Powers of Tau / Hermez ceremony
+    /// files) and checks that they are well-formed:
+    ///
+    /// * every point is on its curve and `[τ^0]₁` is the generator;
+    /// * the powers are consecutive: for a random `ρ`,
+    ///   `e(Σ ρ^i·[τ^{i+1}]₁, G₂) = e(Σ ρ^i·[τ^i]₁, [τ]₂)`.
+    ///
+    /// This validates the structure of the string, not the honesty of the
+    /// ceremony that produced it; use a file from a ceremony you trust.
+    pub fn from_ptau(bytes: &[u8], n: usize, rng: &mut impl RngCore) -> Result<Self, PtauError> {
+        let sections = ptau_sections(bytes)?;
+        let find = |kind: u32| {
+            sections
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map(|(_, data)| *data)
+                .ok_or(PtauError::Malformed("missing section"))
+        };
+
+        let header = find(1)?;
+        if header.len() != 44 || header[..4] != 32u32.to_le_bytes() {
+            return Err(PtauError::Malformed("unexpected header"));
+        }
+        if header[4..36] != Fq::MODULUS.to_bytes_le()[..] {
+            return Err(PtauError::WrongCurve);
+        }
+        let power = u32::from_le_bytes(header[36..40].try_into().expect("4 bytes"));
+        if power >= 32 || n == 0 || n > (1usize << power) {
+            return Err(PtauError::TooShort {
+                available: 1usize.checked_shl(power).unwrap_or(0),
+            });
+        }
+
+        let g1_section = find(2)?;
+        let g2_section = find(3)?;
+        if g1_section.len() < 64 * n || g2_section.len() < 256 {
+            return Err(PtauError::Malformed("truncated point section"));
+        }
+        let powers_g1 = g1_section[..64 * n]
+            .chunks(64)
+            .map(|c| {
+                let p = G1Affine::new_unchecked(montgomery_fq(&c[..32])?, montgomery_fq(&c[32..])?);
+                if p.is_on_curve() {
+                    Ok(p)
+                } else {
+                    Err(PtauError::InvalidPoint)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // The second G2 power is [τ]₂; coordinates are stored as (c0, c1).
+        let t = &g2_section[128..256];
+        let tau_g2 = G2Affine::new_unchecked(
+            Fq2::new(montgomery_fq(&t[..32])?, montgomery_fq(&t[32..64])?),
+            Fq2::new(montgomery_fq(&t[64..96])?, montgomery_fq(&t[96..])?),
+        );
+        if !tau_g2.is_on_curve() || !tau_g2.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(PtauError::InvalidPoint);
+        }
+        if powers_g1[0] != G1Affine::generator() {
+            return Err(PtauError::Inconsistent);
+        }
+
+        // Consecutive powers, checked with one random linear combination.
+        if n > 1 {
+            let rho = Fr::rand(rng);
+            let mut coeffs = Vec::with_capacity(n - 1);
+            let mut power = Fr::from(1u64);
+            for _ in 0..n - 1 {
+                coeffs.push(power);
+                power *= rho;
+            }
+            let low = G1::msm_unchecked(&powers_g1[..n - 1], &coeffs);
+            let high = G1::msm_unchecked(&powers_g1[1..], &coeffs);
+            let ok = Bn254::multi_pairing([high, -low], [G2Affine::generator(), tau_g2]).0
+                == <Bn254 as Pairing>::TargetField::ONE;
+            if !ok {
+                return Err(PtauError::Inconsistent);
+            }
+        }
+        Ok(Self { powers_g1, tau_g2 })
+    }
+
     /// The folding commitment key over this SRS: the powers as vector
     /// generators plus a transparent blinding generator.
     pub fn commitment_key(&self, label: &[u8], len: usize) -> CommitmentKey<G1> {
@@ -53,6 +136,73 @@ impl Srs {
             h: hash_to_curve::<G1>(label, 0),
         }
     }
+}
+
+/// Errors when loading a `.ptau` file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PtauError {
+    Malformed(&'static str),
+    /// The file is not for BN254.
+    WrongCurve,
+    /// The ceremony has fewer powers than requested.
+    TooShort {
+        available: usize,
+    },
+    /// A point is not on its curve or not in the right subgroup.
+    InvalidPoint,
+    /// The points are not consecutive powers of one `τ`.
+    Inconsistent,
+}
+
+impl core::fmt::Display for PtauError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Malformed(what) => write!(f, "malformed .ptau file: {what}"),
+            Self::WrongCurve => write!(f, ".ptau file is not for BN254"),
+            Self::TooShort { available } => {
+                write!(f, ".ptau file only has {available} powers")
+            }
+            Self::InvalidPoint => write!(f, ".ptau file contains an invalid curve point"),
+            Self::Inconsistent => write!(f, ".ptau points are not consecutive powers of tau"),
+        }
+    }
+}
+
+/// Splits a `.ptau` container into `(section type, data)` pairs.
+fn ptau_sections(bytes: &[u8]) -> Result<Vec<(u32, &[u8])>, PtauError> {
+    let err = PtauError::Malformed("unexpected end of file");
+    if bytes.len() < 12 || &bytes[..4] != b"ptau" {
+        return Err(PtauError::Malformed("bad magic bytes"));
+    }
+    let mut rest = &bytes[12..];
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        if rest.len() < 12 {
+            return Err(err);
+        }
+        let kind = u32::from_le_bytes(rest[..4].try_into().expect("4 bytes"));
+        let size = u64::from_le_bytes(rest[4..12].try_into().expect("8 bytes"));
+        let size = usize::try_from(size).map_err(|_| err.clone())?;
+        if rest.len() - 12 < size {
+            return Err(err);
+        }
+        out.push((kind, &rest[12..12 + size]));
+        rest = &rest[12 + size..];
+    }
+    Ok(out)
+}
+
+/// A base-field element stored little-endian in Montgomery form.
+fn montgomery_fq(bytes: &[u8]) -> Result<Fq, PtauError> {
+    let mut limbs = [0u64; 4];
+    for (limb, chunk) in limbs.iter_mut().zip(bytes.chunks(8)) {
+        *limb = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+    }
+    let repr = BigInt::<4>::new(limbs);
+    if repr >= Fq::MODULUS {
+        return Err(PtauError::InvalidPoint);
+    }
+    Ok(Fq::new_unchecked(repr))
 }
 
 /// Evaluates the polynomial with coefficients `coeffs` at `c`.
@@ -123,5 +273,54 @@ mod tests {
             assert!(!verify(comm, c, value, proof, srs.tau_g2));
             assert!(!verify(unblinded, c, value, proof + ck.h, srs.tau_g2));
         }
+    }
+
+    #[test]
+    fn loads_and_validates_a_real_ptau_file() {
+        // A power-7 ceremony file produced by snarkjs with two contributions.
+        const PTAU: &[u8] = include_bytes!("../fixtures/pot7_test.ptau");
+        let mut rng = test_rng();
+        let srs = Srs::from_ptau(PTAU, 128, &mut rng).unwrap();
+        assert_eq!(srs.powers_g1.len(), 128);
+
+        // The loaded string really supports KZG openings.
+        let ck = srs.commitment_key(b"ptau-test", 128);
+        let coeffs: Vec<Fr> = (0..100).map(|_| Fr::rand(&mut rng)).collect();
+        let c = Fr::rand(&mut rng);
+        let (value, proof) = open(&ck, &coeffs, c);
+        assert!(verify(
+            ck.commit(&coeffs, Fr::zero()),
+            c,
+            value,
+            proof,
+            srs.tau_g2
+        ));
+
+        // Requests beyond the ceremony, corruption and truncation are refused.
+        assert_eq!(
+            Srs::from_ptau(PTAU, 129, &mut rng).unwrap_err(),
+            PtauError::TooShort { available: 128 }
+        );
+        let g1_start = 80;
+        let mut bad = PTAU.to_vec();
+        bad[g1_start + 64 * 5] ^= 1; // x of [τ^5]₁: no longer on the curve
+        assert_eq!(
+            Srs::from_ptau(&bad, 128, &mut rng).unwrap_err(),
+            PtauError::InvalidPoint
+        );
+        // Swapping two valid powers breaks the geometric progression.
+        let mut bad = PTAU.to_vec();
+        let (a, b) = (g1_start + 64 * 3, g1_start + 64 * 4);
+        let tmp = bad[a..a + 64].to_vec();
+        bad.copy_within(b..b + 64, a);
+        bad[b..b + 64].copy_from_slice(&tmp);
+        assert_eq!(
+            Srs::from_ptau(&bad, 128, &mut rng).unwrap_err(),
+            PtauError::Inconsistent
+        );
+        for cut in [0, 11, 40, 5000, PTAU.len() - 1] {
+            assert!(Srs::from_ptau(&PTAU[..cut], 16, &mut rng).is_err());
+        }
+        assert!(Srs::from_ptau(b"not a ptau file", 16, &mut rng).is_err());
     }
 }

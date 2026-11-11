@@ -66,7 +66,9 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 - [x] Test në EVM lokale me precompile reale: akumulatori në zinxhir = ai i provuesit, 16 falsifikime
       të refuzuara, çelës i panjohur i refuzuar, matje gazi
 - [x] `finalize` (pa provë në zinxhir) + `verify_final` jashtë zinxhirit mbetet për mënyrën transparente
-- [ ] SRS nga ceremonia publike (Perpetual Powers of Tau, skedar `.ptau`): tani vetëm SRS testimi
+- [x] `Srs::from_ptau`: ngarkon SRS nga skedarët `.ptau` të ceremonive publike (Perpetual Powers of
+      Tau / Hermez) dhe verifikon strukturën (pika në kurbë, fuqi të njëpasnjëshme me çiftëzim);
+      testi EVM përdor një skedar real të këtij formati
 - [ ] Çelësat Groth16 të vendimtarit janë **specifikë për qarkun e aplikacionit** (qarku vendimtar
       përmban matricat `A, B, C`): duhet ceremoni faze 2 për çdo qark, ose zëvendësim me një
       sistem me setup universal (PlonK/HyperKZG) që të mos kërkohet asgjë nga klienti
@@ -89,7 +91,9 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
       fshirje ose ndryshim; rikthehet pas rinisjes
 - [x] `Dockerfile` + test tymi në CI kundrejt kontejnerit
 - [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
-- [ ] Lidhje FFI: Swift (XCFramework), Kotlin (AAR/JNI), Python (zkML)
+- [x] SDK native me UniFFI (`crates/mobile-ffi`): një API Rust → lidhje Swift, Kotlin dhe Python;
+      test fund-më-fund në Python në CI (~93 ms / hap me shumë fije), kontroll tipesh për Swift
+- [ ] Paketimi për pajisje: XCFramework (kërkon makinë macOS) dhe AAR (kërkon Android NDK)
 - [ ] Shumë-fije në WASM (aktualisht një fije: ~1.3 s / hap)
 - [ ] Hyrje nga Noir dhe ONNX (zkML)
 
@@ -111,7 +115,9 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Faza 2 — hap i plotë IVC, hap me 2^16 kufizime | ~415 ms |
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
-| WASM (Node.js, 1 fije, qark Circom) | ~1.3 s / hap, ~161 MiB memorie |
+| WASM (Node.js, 1 fije, qark Circom) | ~0.9–1.3 s / hap, ~161 MiB memorie |
+| SDK native (Python/Swift/Kotlin, 4 fije, qark Circom) | ~93 ms / hap |
+| Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
 | `finalizeWithProof` në EVM (një herë) | ~448k gas, provë 512 bajt |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
