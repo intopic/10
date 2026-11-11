@@ -1,0 +1,22 @@
+[package]
+name = "core-r1cs"
+description = "CSR sparse matrices and (relaxed) R1CS instances/witnesses for the Zeno-Llull Nova IVC engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ark-ff.workspace = true
+ark-ec.workspace = true
+ark-std.workspace = true
+ark-serialize.workspace = true
+ark-relations = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+ark-pallas.workspace = true
+
+[features]
+default = ["arkworks-bridge"]
+arkworks-bridge = ["dep:ark-relations"]
+parallel = ["dep:rayon", "ark-ff/parallel", "ark-ec/parallel", "ark-std/parallel"]
