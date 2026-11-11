@@ -2,11 +2,16 @@
 //! calldata for every call and the accumulator the prover expects on-chain
 //! after each of them, plus the off-chain decider's verdict.
 //!
-//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N]`
+//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--mode transparent|onchain]`
+//!
+//! `onchain` uses a locally generated (test-only) KZG reference string and
+//! Groth16 decider keys and emits the `finalizeWithProof` flow.
 
 use ark_bn254::Fr;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-use evm_verifier::{abi, point_words, verify_final, word, EvmParams, OnChainFolder, Word};
+use evm_verifier::{
+    abi, kzg::Srs, point_words, verify_final, word, DeciderKeys, EvmParams, OnChainFolder, Word,
+};
 use llull_folder::{core_r1cs::RelaxedR1CSInstance, demo_circuit::CubicChain};
 
 fn hex(bytes: &[u8]) -> String {
@@ -30,6 +35,7 @@ fn acc_json(acc: &RelaxedR1CSInstance<ark_bn254::G1Projective>) -> String {
 fn main() {
     let mut session = [0u8; 32];
     let mut steps = 5usize;
+    let mut onchain = false;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         let value = argv.next().expect("missing value");
@@ -42,6 +48,7 @@ fn main() {
                 }
             }
             "--steps" => steps = value.parse().expect("number"),
+            "--mode" => onchain = value == "onchain",
             other => panic!("unknown option {other}"),
         }
     }
@@ -53,7 +60,16 @@ fn main() {
     let (shape, _, _) = CubicChain { z_in: z0, rounds }
         .synthesize()
         .expect("synthesis");
-    let params = EvmParams::setup(shape, b"zeno-llull/evm-fixture");
+    let params = if onchain {
+        let len = shape
+            .num_vars
+            .max(shape.num_constraints)
+            .next_power_of_two();
+        let srs = Srs::insecure_for_testing(len, &mut rng);
+        EvmParams::setup_kzg(shape, b"zeno-llull/evm-fixture", &srs)
+    } else {
+        EvmParams::setup(shape, b"zeno-llull/evm-fixture")
+    };
     let mut folder = OnChainFolder::new(&params);
 
     let mut state = z0;
@@ -73,6 +89,26 @@ fn main() {
             hex(&word(&state))
         ));
     }
+    let open = hex(&abi::open_session(&params.vk, &[z0]));
+    let get = hex(&abi::get_accumulator(&session));
+    if onchain {
+        let keys = DeciderKeys::insecure_for_testing(&params, &mut rng).expect("decider keys");
+        let key = abi::decider_key(&params, &keys.vk);
+        let (mask, final_acc, proof) = folder
+            .finalize_onchain(&params, &keys, &mut rng)
+            .expect("decider proof");
+        let proof_bytes = 32 * abi::decider_proof_words(&proof).len();
+        println!(
+            "{{\"vk\":\"{}\",\"open\":\"{open}\",\"register\":\"{}\",\"steps\":[{}],\"finalizeWithProof\":{{\"calldata\":\"{}\",\"accumulator\":{},\"proofBytes\":{proof_bytes}}},\"getAccumulator\":\"{get}\"}}",
+            hex(&params.vk),
+            hex(&abi::register_circuit(&params.vk, &key)),
+            step_items.join(","),
+            hex(&abi::finalize_with_proof(&session, &mask, &proof, &key)),
+            acc_json(&final_acc),
+        );
+        return;
+    }
+
     let (mask, final_acc, snark) = folder.finalize(&params, &mut rng).expect("finalize");
     let snark_ok = verify_final(&params, &final_acc, &snark);
     // The decider must reject any other accumulator.
@@ -81,13 +117,11 @@ fn main() {
     let snark_rejects_other = !verify_final(&params, &other, &snark);
 
     println!(
-        "{{\"vk\":\"{}\",\"open\":\"{}\",\"steps\":[{}],\"finalize\":{{\"calldata\":\"{}\",\"accumulator\":{}}},\"getAccumulator\":\"{}\",\"deciderAccepts\":{},\"deciderRejectsOther\":{}}}",
+        "{{\"vk\":\"{}\",\"open\":\"{open}\",\"steps\":[{}],\"finalize\":{{\"calldata\":\"{}\",\"accumulator\":{}}},\"getAccumulator\":\"{get}\",\"deciderAccepts\":{},\"deciderRejectsOther\":{}}}",
         hex(&params.vk),
-        hex(&abi::open_session(&params.vk, &[z0])),
         step_items.join(","),
         hex(&abi::finalize(&session, &mask)),
         acc_json(&final_acc),
-        hex(&abi::get_accumulator(&session)),
         snark_ok,
         snark_rejects_other
     );

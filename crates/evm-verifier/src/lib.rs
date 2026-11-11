@@ -19,14 +19,19 @@
 extern crate alloc;
 
 pub mod abi;
+pub mod decider_circuit;
+pub mod kzg;
 
 use alloc::vec::Vec;
-use ark_bn254::{Fq, Fr, G1Projective as G1};
+use ark_bn254::{Bn254, Fq, Fr, G1Projective as G1, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
+use ark_groth16::{Groth16, Proof, ProvingKey, VerifyingKey};
 use ark_serialize::CanonicalSerialize;
+use ark_snark::SNARK;
 use ark_std::rand::RngCore;
 use core_r1cs::{R1CSInstance, R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness};
+use decider_circuit::DeciderCircuit;
 use decider_zk::spartan::{self, SpartanProof};
 use llull_folder::{
     commit_witness, nifs_prove_relaxed_with, nifs_prove_with, sample_relaxed, CommitmentKey,
@@ -39,6 +44,10 @@ use sha3::Keccak256;
 pub const TAG_FOLD: u64 = 1;
 /// Transcript tag of the final masking fold; must match the contract.
 pub const TAG_MASK: u64 = 3;
+/// Transcript tag of the decider's evaluation point; must match the contract.
+pub const TAG_POINT: u64 = 5;
+/// Transcript tag of the KZG batching challenge; must match the contract.
+pub const TAG_BATCH: u64 = 6;
 
 /// A 32-byte big-endian EVM word.
 pub type Word = [u8; 32];
@@ -66,13 +75,43 @@ fn relaxed_words(out: &mut Vec<Word>, u: &RelaxedR1CSInstance<G1>) {
     out.extend(u.x.iter().map(word));
 }
 
-/// The low 128 bits of `keccak256(words)`, as the contract computes it.
-fn challenge(words: &[Word]) -> Fr {
+fn keccak(words: &[Word]) -> Word {
     let mut hasher = Keccak256::new();
     for w in words {
         hasher.update(w);
     }
-    Fr::from_be_bytes_mod_order(&hasher.finalize()[16..])
+    hasher.finalize().into()
+}
+
+/// The low 128 bits of `keccak256(words)`, as the contract computes it.
+fn challenge(words: &[Word]) -> Fr {
+    Fr::from_be_bytes_mod_order(&keccak(words)[16..])
+}
+
+/// `keccak256(words) mod r`, as the contract computes it.
+fn challenge_full(words: &[Word]) -> Fr {
+    Fr::from_be_bytes_mod_order(&keccak(words))
+}
+
+/// The point at which the decider opens `comm_W` and `comm_E`; it depends on
+/// the whole final accumulator, hence on both commitments.
+pub fn decider_point(vk: &Word, acc: &RelaxedR1CSInstance<G1>) -> Fr {
+    let mut words = alloc::vec![word(&Fr::from(TAG_POINT)), *vk];
+    relaxed_words(&mut words, acc);
+    challenge_full(&words)
+}
+
+/// The challenge batching the two KZG openings into one pairing check.
+pub fn batch_challenge(c: &Fr, w_eval: &Fr, e_eval: &Fr, pi_w: &G1, pi_e: &G1) -> Fr {
+    let mut words = alloc::vec![
+        word(&Fr::from(TAG_BATCH)),
+        word(c),
+        word(w_eval),
+        word(e_eval)
+    ];
+    words.extend(point_words(pi_w));
+    words.extend(point_words(pi_e));
+    challenge_full(&words)
 }
 
 /// Fiat–Shamir challenge of a step fold.
@@ -111,26 +150,50 @@ pub struct EvmParams {
     pub shape: R1CSShape<Fr>,
     pub ck: CommitmentKey<G1>,
     pub vk: Word,
+    /// `[τ]₂` when the commitment key is a KZG key (on-chain decider mode).
+    pub tau_g2: Option<G2Affine>,
 }
 
 impl EvmParams {
-    /// Derives the parameters transparently. The step circuit must expose
-    /// `x = (z_in, z_out)` as its public inputs.
+    /// Derives the parameters transparently (hash-to-curve Pedersen key).
+    /// The final accumulator is then decided off-chain with [`verify_final`].
+    /// The step circuit must expose `x = (z_in, z_out)` as its public inputs.
     pub fn setup(shape: R1CSShape<Fr>, label: &[u8]) -> Self {
-        assert!(
-            shape.num_io > 0 && shape.num_io.is_multiple_of(2),
-            "public inputs must be (z_in, z_out)"
-        );
         let len = shape
             .num_vars
             .max(shape.num_constraints)
             .next_power_of_two();
         let ck = CommitmentKey::<G1>::setup(label, len);
+        Self::from_key(shape, ck, None, label)
+    }
+
+    /// Derives the parameters over a universal KZG reference string, which
+    /// enables the on-chain decider ([`OnChainFolder::finalize_onchain`]).
+    pub fn setup_kzg(shape: R1CSShape<Fr>, label: &[u8], srs: &kzg::Srs) -> Self {
+        let len = shape
+            .num_vars
+            .max(shape.num_constraints)
+            .next_power_of_two();
+        let ck = srs.commitment_key(label, len);
+        Self::from_key(shape, ck, Some(srs.tau_g2), label)
+    }
+
+    fn from_key(
+        shape: R1CSShape<Fr>,
+        ck: CommitmentKey<G1>,
+        tau_g2: Option<G2Affine>,
+        label: &[u8],
+    ) -> Self {
+        assert!(
+            shape.num_io > 0 && shape.num_io.is_multiple_of(2),
+            "public inputs must be (z_in, z_out)"
+        );
         let mut bytes = Vec::new();
         let ser = "serializing to a Vec cannot fail";
         shape.serialize_compressed(&mut bytes).expect(ser);
         ck.gens.serialize_compressed(&mut bytes).expect(ser);
         ck.h.serialize_compressed(&mut bytes).expect(ser);
+        tau_g2.serialize_compressed(&mut bytes).expect(ser);
         let mut hasher = Sha256::new();
         hasher.update(b"zeno-llull/evm-vk/v1");
         hasher.update((label.len() as u64).to_le_bytes());
@@ -140,6 +203,7 @@ impl EvmParams {
             shape,
             ck,
             vk: hasher.finalize().into(),
+            tau_g2,
         }
     }
 
@@ -217,15 +281,14 @@ impl OnChainFolder {
         })
     }
 
-    /// Masks the accumulator for zero-knowledge and proves, succinctly, that
-    /// the final accumulator is satisfiable. After the contract executes
-    /// `finalize` with the returned [`MaskProof`], its accumulator equals
-    /// the returned instance and the SNARK verifies against it.
-    pub fn finalize(
+    /// Folds a random satisfying relaxed pair into the accumulator, so that
+    /// the final witness is uniformly distributed (zero-knowledge).
+    #[allow(clippy::type_complexity)]
+    fn mask(
         self,
         params: &EvmParams,
         rng: &mut impl RngCore,
-    ) -> Result<(MaskProof, RelaxedR1CSInstance<G1>, SpartanProof<G1>), FoldError> {
+    ) -> Result<(MaskProof, RelaxedR1CSInstance<G1>, RelaxedR1CSWitness<G1>), FoldError> {
         let (mask, mask_w) = sample_relaxed(&params.ck, &params.shape, rng);
         let (acc, witness, comm_t) = nifs_prove_relaxed_with(
             &params.ck,
@@ -237,9 +300,159 @@ impl OnChainFolder {
             rng,
             |comm_t| mask_challenge(&params.vk, &self.acc, &mask, comm_t),
         )?;
-        let snark = spartan::prove(&params.ck, &params.digest(), &params.shape, &acc, &witness);
-        Ok((MaskProof { mask, comm_t }, acc, snark))
+        Ok((MaskProof { mask, comm_t }, acc, witness))
     }
+
+    /// Mode A (transparent): masks the accumulator and proves, succinctly,
+    /// that the final accumulator is satisfiable. After the contract
+    /// executes `finalize` with the returned [`MaskProof`], its accumulator
+    /// equals the returned instance and the SNARK verifies against it
+    /// off-chain.
+    pub fn finalize(
+        self,
+        params: &EvmParams,
+        rng: &mut impl RngCore,
+    ) -> Result<(MaskProof, RelaxedR1CSInstance<G1>, SpartanProof<G1>), FoldError> {
+        let (mask, acc, witness) = self.mask(params, rng)?;
+        let snark = spartan::prove(&params.ck, &params.digest(), &params.shape, &acc, &witness);
+        Ok((mask, acc, snark))
+    }
+
+    /// Mode B (EVM): masks the accumulator and produces the constant-size
+    /// decider proof that `finalizeWithProof` verifies on-chain: two KZG
+    /// openings and one Groth16 proof.
+    pub fn finalize_onchain(
+        self,
+        params: &EvmParams,
+        keys: &DeciderKeys,
+        rng: &mut (impl RngCore + ark_std::rand::CryptoRng),
+    ) -> Result<(MaskProof, RelaxedR1CSInstance<G1>, OnChainDeciderProof), DeciderError> {
+        if params.tau_g2.is_none() {
+            return Err(DeciderError::NotKzg);
+        }
+        let (mask, acc, witness) = self.mask(params, rng)?;
+        // Refuse to prove an accumulator that does not satisfy the circuit.
+        llull_folder::check_accumulator(&params.ck, &params.shape, &acc, &witness)
+            .map_err(|_| DeciderError::Unsatisfied)?;
+        let c = decider_point(&params.vk, &acc);
+        let (w_eval, pi_w) = kzg::open(&params.ck, &witness.w, c);
+        let (e_eval, pi_e) = kzg::open(&params.ck, &witness.e, c);
+        let circuit = DeciderCircuit {
+            shape: &params.shape,
+            u: Some(acc.u),
+            x: Some(acc.x.clone()),
+            c: Some(c),
+            w_eval: Some(w_eval),
+            e_eval: Some(e_eval),
+            w: Some(witness.w.clone()),
+            e: Some(witness.e.clone()),
+        };
+        let groth16 = Groth16::<Bn254>::prove(&keys.pk, circuit, rng)
+            .map_err(|_| DeciderError::Unsatisfied)?;
+        let proof = OnChainDeciderProof {
+            w_eval,
+            e_eval,
+            r_w: witness.r_w,
+            r_e: witness.r_e,
+            pi_w,
+            pi_e,
+            groth16,
+        };
+        // Never hand out a proof the contract would reject.
+        if !verify_onchain_decider(params, &keys.vk, &acc, &proof) {
+            return Err(DeciderError::Unsatisfied);
+        }
+        Ok((mask, acc, proof))
+    }
+}
+
+/// Errors of the on-chain decider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeciderError {
+    Fold(FoldError),
+    /// The parameters were not derived over a KZG reference string.
+    NotKzg,
+    /// The accumulated witness does not satisfy the circuit.
+    Unsatisfied,
+    Setup,
+}
+
+impl From<FoldError> for DeciderError {
+    fn from(e: FoldError) -> Self {
+        Self::Fold(e)
+    }
+}
+
+impl core::fmt::Display for DeciderError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Fold(e) => write!(f, "{e}"),
+            Self::NotKzg => write!(f, "on-chain decider needs KZG parameters"),
+            Self::Unsatisfied => write!(f, "accumulated witness does not satisfy the circuit"),
+            Self::Setup => write!(f, "decider key generation failed"),
+        }
+    }
+}
+
+/// Groth16 keys of the decider circuit of one application circuit.
+pub struct DeciderKeys {
+    pub pk: ProvingKey<Bn254>,
+    pub vk: VerifyingKey<Bn254>,
+}
+
+impl DeciderKeys {
+    /// Generates the keys from locally sampled randomness.
+    ///
+    /// **For tests and development only**: the sampled trapdoor allows
+    /// forging proofs. Production keys must come from a multi-party phase-2
+    /// ceremony for this decider circuit.
+    pub fn insecure_for_testing(
+        params: &EvmParams,
+        rng: &mut (impl RngCore + ark_std::rand::CryptoRng),
+    ) -> Result<Self, DeciderError> {
+        let (pk, vk) =
+            Groth16::<Bn254>::circuit_specific_setup(DeciderCircuit::blank(&params.shape), rng)
+                .map_err(|_| DeciderError::Setup)?;
+        Ok(Self { pk, vk })
+    }
+}
+
+/// The constant-size proof verified by `finalizeWithProof`.
+#[derive(Clone, Debug)]
+pub struct OnChainDeciderProof {
+    pub w_eval: Fr,
+    pub e_eval: Fr,
+    pub r_w: Fr,
+    pub r_e: Fr,
+    pub pi_w: G1,
+    pub pi_e: G1,
+    pub groth16: Proof<Bn254>,
+}
+
+/// Exactly the checks `finalizeWithProof` performs on the final accumulator.
+pub fn verify_onchain_decider(
+    params: &EvmParams,
+    groth16_vk: &VerifyingKey<Bn254>,
+    acc: &RelaxedR1CSInstance<G1>,
+    proof: &OnChainDeciderProof,
+) -> bool {
+    let Some(tau_g2) = params.tau_g2 else {
+        return false;
+    };
+    let c = decider_point(&params.vk, acc);
+    let gamma = batch_challenge(&c, &proof.w_eval, &proof.e_eval, &proof.pi_w, &proof.pi_e);
+    // One batched KZG opening of the unblinded commitments.
+    let comm =
+        (acc.comm_w - params.ck.h * proof.r_w) + (acc.comm_e - params.ck.h * proof.r_e) * gamma;
+    let value = proof.w_eval + gamma * proof.e_eval;
+    let pi = proof.pi_w + proof.pi_e * gamma;
+    if !kzg::verify(comm, c, value, pi, tau_g2) {
+        return false;
+    }
+    let mut inputs = alloc::vec![acc.u];
+    inputs.extend_from_slice(&acc.x);
+    inputs.extend([c, proof.w_eval, proof.e_eval]);
+    Groth16::<Bn254>::verify(groth16_vk, &inputs, &proof.groth16).unwrap_or(false)
 }
 
 /// Off-chain decider: checks the succinct proof against the accumulator read

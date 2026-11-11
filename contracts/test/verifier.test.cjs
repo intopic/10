@@ -93,8 +93,8 @@ const intrinsicGas = (data) =>
   const fx = fixture(["--session", sessionId, "--steps", String(STEPS)]);
   assert.equal(fx.vk, pre.vk);
 
-  const readAccumulator = async () => {
-    const res = await call(stranger, fx.getAccumulator);
+  const readAccumulator = async (getCalldata = fx.getAccumulator) => {
+    const res = await call(stranger, getCalldata);
     assert.ok(res.ok);
     const words = res.ret.slice(2).match(/.{64}/g);
     const at = (i) => BigInt("0x" + words[i]);
@@ -109,6 +109,7 @@ const intrinsicGas = (data) =>
       steps: Number(at(7)),
       finalized: at(8) === 1n,
       vk: "0x" + words[9],
+      decided: at(10) === 1n,
     };
   };
 
@@ -159,16 +160,61 @@ const intrinsicGas = (data) =>
   assert.equal(fx.deciderAccepts, true);
   assert.equal(fx.deciderRejectsOther, true);
 
+  assert.equal(final.decided, false, "transparent mode is decided off-chain only");
+
+  // --- Mode B: on-chain decider (KZG openings + Groth16) -----------------------
+  const preB = fixture(["--steps", "1", "--mode", "onchain"]);
+  const openedB = await call(prover, preB.open);
+  assert.ok(openedB.ok);
+  const fb = fixture(["--session", openedB.ret, "--steps", String(STEPS), "--mode", "onchain"]);
+  for (const step of fb.steps) {
+    assert.ok((await call(prover, step.calldata, FEE)).ok);
+  }
+  const fwp = fb.finalizeWithProof.calldata;
+  // No decider key registered for this circuit yet.
+  await revertsWith(call(prover, fwp), "UnknownDeciderKey()");
+  await revertsWith(call(stranger, fb.register), "NotOwner()");
+  assert.ok((await call(owner, fb.register)).ok);
+  await revertsWith(call(owner, fb.register), "CircuitAlreadyRegistered()");
+
+  // Forgeries: flip one bit in each of the 16 proof words and in the key.
+  const flip = (hex, byteOffset) => {
+    const i = 2 + 2 * byteOffset;
+    const b = (parseInt(hex.slice(i, i + 2), 16) ^ 1).toString(16).padStart(2, "0");
+    return hex.slice(0, i) + b + hex.slice(i + 2);
+  };
+  const proofStart = 4 + 64; // selector, sessionId, offset of maskProof
+  for (let w = 0; w < 16; w++) {
+    const res = await call(prover, flip(fwp, proofStart + 32 * w + 31));
+    assert.equal(res.ok, false, `forged proof word ${w} was accepted`);
+  }
+  const keyStart = (fwp.length - 2) / 2 - 32;
+  await revertsWith(call(prover, flip(fwp, keyStart + 31)), "UnknownDeciderKey()");
+  assert.equal((await readAccumulator(fb.getAccumulator)).finalized, false);
+
+  const decided = await call(prover, fwp);
+  assert.ok(decided.ok, "finalizeWithProof reverted");
+  console.log(`finalizeWithProof    : ${decided.gas} gas (mask fold + 2 KZG openings + Groth16)`);
+  console.log(`on-chain proof       : ${fb.finalizeWithProof.proofBytes} bytes`);
+  const finalB = await readAccumulator(fb.getAccumulator);
+  assert.deepEqual(finalB.acc, fb.finalizeWithProof.accumulator);
+  assert.equal(finalB.finalized, true);
+  assert.equal(finalB.decided, true);
+  assert.equal(finalB.steps, STEPS);
+  assert.deepEqual(finalB.state, [fb.steps[STEPS - 1].state]);
+  await revertsWith(call(prover, fwp), "SessionClosed()");
+  assert.ok(fb.finalizeWithProof.proofBytes < 4096);
+
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  assert.equal(await balance(to), FEE * BigInt(STEPS));
+  assert.equal(await balance(to), FEE * BigInt(2 * STEPS));
   const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(owner.toString()));
   await revertsWith(call(stranger, withdraw), "NotOwner()");
   await revertsWith(call(stranger, "0x" + sel["setProtocolFee(uint256)"] + word(0n)), "NotOwner()");
   const before = await balance(owner);
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
-  assert.equal((await balance(owner)) - before, FEE * BigInt(STEPS));
+  assert.equal((await balance(owner)) - before, FEE * BigInt(2 * STEPS));
   console.log("OK");
 })().catch((e) => {
   console.error(e);

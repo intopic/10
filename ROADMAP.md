@@ -39,31 +39,39 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 - [ ] KPI i kohës: MSM me bazë fikse dhe tabela të parallogaritura, cache i `AZ, BZ, CZ`,
       sintezë pa mbingarkesën e `ark-relations`
 
-## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` 🚧
+## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese (vendimtar me dy mënyra) ✅ / 🚧
 
-KPI: prova finale < 4 KB — **e pa arritur** (~10 KB). Kosto EVM < 300k gas — **arritur për palosjen
-në zinxhir** (~75k gas/hap); vendimtari i shkurtër verifikohet jashtë zinxhirit.
+KPI: prova finale < 4 KB — **arritur në Mënyrën B (512 bajt)**; Mënyra A ~10 KB.
+Kosto EVM < 300k gas — **arritur për çdo hap (~74k)**; vendimi final në zinxhir kushton ~448k një herë për sesion.
+
+Maskimi zero-knowledge (i përbashkët):
 
 - [x] Palosja e plotë relaksuar-me-relaksuar (`E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`)
-- [x] Maskimi zero-knowledge: palosje me një çift të relaksuar të rastësishëm
-      (`sample_relaxed`), dëshmia e hapur `W' = W + r·W_rand` është uniforme
-- [x] `ZkIvcProof::prove / verify` (varianti i pakompresuar), serializim, teste negative
-- [x] Kompresues i shkurtër pa Trusted Setup dhe pa FFT: dy sum-check (stil Spartan) +
-      argument i produktit të brendshëm (IPA) mbi vetë gjeneratorët Pedersen të palosjes
-- [x] `CompressedIvcProof`: 1.46 MB → ~10 KB, e pavarur nga numri i hapave, logaritmike
-      në madhësinë e qarkut; 16 teste mutacioni refuzohen; kufi 16 KiB i detyruar në CI
-- [x] CLI `zeno-decider --steps N --log-constraints K --cycle pasta|bn254`
-- [x] `contracts/ZenoLlullVerifier.sol`: verifikues i palosjes në zinxhir (BN254, precompile
-      `ecMul`/`ecAdd`), `verifyFoldedProof(bytes, uint256[])`, sesione, zinxhirim i gjendjes
-      `z_out → z_in`, `finalize` me maskim ZK, `protocolFee` me tërheqje nga pronari
-- [x] `crates/evm-verifier`: transkript Keccak identik me kontratën, kodim ABI, `OnChainFolder`,
-      vendimtar jashtë zinxhirit `verify_final` kundrejt akumulatorit në zinxhir
-- [x] Test në EVM lokale (precompile reale BN254) në CI: akumulatori në zinxhir = ai i provuesit,
-      ~75k gas për hap (199k hapi i parë), kufi 300k i detyruar, kontroll aksesi dhe tarife
-- [ ] Vendimtar **në zinxhir**: IPA kërkon MSM mbi mijëra pika dhe nuk verifikohet dot në EVM;
-      kërkon akumulim në një kurbë (CycleFold) + KZG + mbështjellje Groth16 (Trusted Setup).
-      Deri atëherë vlefshmëria e dëshmisë së akumuluar verifikohet jashtë zinxhirit
-- [ ] Prova < 4 KB (e njëjta rrugë: CycleFold + KZG)
+- [x] Palosje me një çift të relaksuar të rastësishëm (`sample_relaxed`): dëshmia `W' = W + r·W_rand` është uniforme
+
+Mënyra A — 100% transparente (off-chain, celular, portofole), mbi çdo cikël:
+
+- [x] SNARK pa Trusted Setup dhe pa FFT: dy sum-check (stil Spartan) + IPA mbi vetë gjeneratorët Pedersen
+- [x] `CompressedIvcProof`: 1.46 MB → ~10 KB, e pavarur nga numri i hapave; kufi 16 KiB në CI
+- [x] CLI `zeno-decider`; SDK WASM dhe Cloud Prover nxjerrin këtë provë
+
+Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
+
+- [x] Palosje në zinxhir: `verifyFoldedProof(bytes, uint256[])` me 2 `ecMul` + 2 `ecAdd`, sfidë Keccak,
+      sesione, zinxhirim `z_out → z_in`, `protocolFee`
+- [x] Angazhime KZG mbi SRS universale (`evm-verifier::kzg`), homomorfike si Pedersen
+- [x] Qarku vendimtar Groth16 (`decider_circuit`): R1CS e relaksuar + `W(c)`, `E(c)`
+- [x] `finalizeWithProof`: palosja maskuese + 2 hapje KZG të grupuara + Groth16 në një thirrje
+      çiftëzimi me 6 çifte; sesioni shënohet `decided`
+- [x] Test në EVM lokale me precompile reale: akumulatori në zinxhir = ai i provuesit, 16 falsifikime
+      të refuzuara, çelës i panjohur i refuzuar, matje gazi
+- [x] `finalize` (pa provë në zinxhir) + `verify_final` jashtë zinxhirit mbetet për mënyrën transparente
+- [ ] SRS nga ceremonia publike (Perpetual Powers of Tau, skedar `.ptau`): tani vetëm SRS testimi
+- [ ] Çelësat Groth16 të vendimtarit janë **specifikë për qarkun e aplikacionit** (qarku vendimtar
+      përmban matricat `A, B, C`): duhet ceremoni faze 2 për çdo qark, ose zëvendësim me një
+      sistem me setup universal (PlonK/HyperKZG) që të mos kërkohet asgjë nga klienti
+- [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k; kërkon vendimtar pa Groth16
+- [ ] Mënyra B për IVC-në rekursive off-chain (tani zinxhiri është vetë verifikuesi i palosjes)
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
@@ -104,7 +112,8 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 | WASM (Node.js, 1 fije, qark Circom) | ~1.3 s / hap, ~161 MiB memorie |
-| `verifyFoldedProof` në EVM | ~75k gas (199k hapi i parë), `finalize` ~87k |
+| `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
+| `finalizeWithProof` në EVM (një herë) | ~448k gas, provë 512 bajt |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |
@@ -113,3 +122,6 @@ Koha dominohet nga dy MSM-të për hap (`comm_W` dhe `comm_T`) mbi dëshmi të
 dendura; KPI-ja < 50 ms/hap në 2^16 **nuk** arrihet në 4 vCPU me MSM-në
 aktuale. Shifra "4 000 kufizime për hap" e specifikimit gjithashtu nuk arrihet:
 mbingarkesa reale e matur është ~11 200 kufizime.
+
+Ndarja e 11 217 kufizimeve të qarkut primar: hash-et Poseidon ~6 050 (54%), dy shumëzimet
+skalare ~2 370 (~9 kufizime/bit), aritmetika jo-native ~1 450, alokimet/bitët ~1 300.

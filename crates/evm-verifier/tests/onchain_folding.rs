@@ -95,3 +95,74 @@ fn abi_selectors_and_layout() {
     assert_eq!(data[4 + 95], 1);
     assert_eq!(data[4 + 127], 3);
 }
+
+#[test]
+fn onchain_decider_groth16_kzg() {
+    use ark_std::rand::{rngs::StdRng, SeedableRng};
+    use evm_verifier::{kzg::Srs, verify_onchain_decider, DeciderError, DeciderKeys};
+    let mut rng = StdRng::seed_from_u64(7);
+    let rounds = 16;
+    let (shape, _, _) = CubicChain {
+        z_in: Fr::from(3u64),
+        rounds,
+    }
+    .synthesize()
+    .unwrap();
+    let srs = Srs::insecure_for_testing(64, &mut rng);
+    let params = EvmParams::setup_kzg(shape, b"test", &srs);
+    let keys = DeciderKeys::insecure_for_testing(&params, &mut rng).unwrap();
+
+    let run = |rng: &mut StdRng, corrupt: bool| {
+        let mut folder = OnChainFolder::new(&params);
+        let mut state = Fr::from(3u64);
+        for _ in 0..3 {
+            let circuit = CubicChain {
+                z_in: state,
+                rounds,
+            };
+            let (_, w, x) = circuit.synthesize().unwrap();
+            state = circuit.output();
+            folder.fold_step(&params, w, x, rng).unwrap();
+        }
+        if corrupt {
+            folder.witness.w[2] += Fr::from(1u64);
+        }
+        folder.finalize_onchain(&params, &keys, rng)
+    };
+
+    let (_, acc, proof) = run(&mut rng, false).unwrap();
+    assert!(verify_onchain_decider(&params, &keys.vk, &acc, &proof));
+
+    // Any other accumulator, evaluation, blinding or opening is rejected.
+    let mut other = acc.clone();
+    other.u += Fr::from(1u64);
+    assert!(!verify_onchain_decider(&params, &keys.vk, &other, &proof));
+    let mut other = acc.clone();
+    other.comm_e += params.ck.h;
+    assert!(!verify_onchain_decider(&params, &keys.vk, &other, &proof));
+    let mut bad = proof.clone();
+    bad.w_eval += Fr::from(1u64);
+    assert!(!verify_onchain_decider(&params, &keys.vk, &acc, &bad));
+    let mut bad = proof.clone();
+    bad.r_e += Fr::from(1u64);
+    assert!(!verify_onchain_decider(&params, &keys.vk, &acc, &bad));
+    let mut bad = proof.clone();
+    bad.pi_w += params.ck.h;
+    assert!(!verify_onchain_decider(&params, &keys.vk, &acc, &bad));
+    let mut bad = proof.clone();
+    bad.groth16.c = (bad.groth16.c + params.ck.h).into();
+    assert!(!verify_onchain_decider(&params, &keys.vk, &acc, &bad));
+
+    // An unsatisfied accumulator cannot be decided, and transparent
+    // parameters cannot use the on-chain decider.
+    assert!(matches!(
+        run(&mut rng, true),
+        Err(DeciderError::Unsatisfied)
+    ));
+    let transparent = EvmParams::setup(params.shape.clone(), b"test");
+    let folder = OnChainFolder::new(&transparent);
+    assert!(matches!(
+        folder.finalize_onchain(&transparent, &keys, &mut rng),
+        Err(DeciderError::NotKzg)
+    ));
+}
