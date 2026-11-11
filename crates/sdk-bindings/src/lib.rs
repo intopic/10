@@ -11,7 +11,7 @@ pub mod lib_wasm_ffi;
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use circom::{parse_wtns, CircomR1cs, SdkError};
-use decider_zk::ZkIvcProof;
+use decider_zk::CompressedIvcProof;
 use rand::RngCore;
 use zeno_ivc::{IvcParams, R1csStep, ZenoAccumulator};
 
@@ -21,8 +21,8 @@ pub type Primary = ark_bn254::g1::Config;
 pub type Secondary = ark_grumpkin::GrumpkinConfig;
 /// The application field.
 pub type Fr = ark_bn254::Fr;
-/// A finalized zero-knowledge proof.
-pub type Proof = ZkIvcProof<Primary, Secondary>;
+/// A finalized succinct zero-knowledge proof.
+pub type Proof = CompressedIvcProof<Primary, Secondary>;
 
 const LABEL: &[u8] = b"zeno-llull/sdk/v1";
 
@@ -99,7 +99,8 @@ impl CircomIvc {
         Ok(self.acc.verify(&self.params.ivc)?)
     }
 
-    /// Produces a serialized zero-knowledge proof of the computation so far.
+    /// Produces a serialized succinct zero-knowledge proof of the computation
+    /// so far.
     pub fn finalize(&self, rng: &mut impl RngCore) -> Result<Vec<u8>, SdkError> {
         let proof = Proof::prove(&self.params.ivc, &self.acc, rng)?;
         let mut bytes = Vec::with_capacity(proof.compressed_size());

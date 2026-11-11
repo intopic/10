@@ -13,7 +13,7 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 |---|---|
 | `crates/core-r1cs` | Matricat CSR `A, B, C`, R1CS e relaksuar, instanca `U` dhe dëshmia `W` |
 | `crates/llull-folder` | Pedersen, vektori `T` i Llull-it, transkripti Poseidon, `nifs_prove` / `nifs_verify`, CLI |
-| `crates/decider-zk` | Maskimi zero-knowledge dhe prova përfundimtare `ZkIvcProof` |
+| `crates/decider-zk` | Maskimi zero-knowledge dhe prova e shkurtër `CompressedIvcProof` (sum-check + IPA), CLI |
 | `crates/sdk-bindings` | Hyrje nga Circom (`.r1cs`/`.wtns`) dhe API WebAssembly/TypeScript |
 | `sdk/wasm` | Paketa NPM `@zenollull/wasm-sdk` me test Node.js |
 | `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetika jo-native, stepper IVC mbi ciklin 2-kurbësh, CLI |
@@ -32,6 +32,12 @@ IVC e plotë rekursive (çdo hap verifikon palosjen e hapit të mëparshëm):
 
 ```bash
 cargo run --release -p zeno-ivc -- prove --steps 100 --log-constraints 12 --cycle pasta
+```
+
+Provë përfundimtare e shkurtër zero-knowledge (~10 KB):
+
+```bash
+cargo run --release -p decider-zk -- --steps 20 --log-constraints 12 --cycle pasta
 ```
 
 Ndërtimi për shfletues/celular:

@@ -380,6 +380,9 @@ dependencies = [
  "ark-vesta",
  "core-r1cs",
  "llull-folder",
+ "rand",
+ "rayon",
+ "sha2",
  "zeno-ivc",
 ]
 

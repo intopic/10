@@ -48,6 +48,7 @@ const wasmMiB = () => sdk.wasmMemoryBytes() / (1024 * 1024);
   t = performance.now();
   const proof = prover.finalize();
   console.log(`finalize (ZK)    : ${(performance.now() - t).toFixed(0)} ms, proof ${proof.length} bytes`);
+  assert.ok(proof.length <= 16 * 1024, `proof is ${proof.length} bytes`);
 
   const verifier = new sdk.ZenoLlullVerifier(r1cs);
   t = performance.now();

@@ -1,0 +1,182 @@
+//! Multilinear helpers and the sum-check protocol (no FFT anywhere).
+//!
+//! Convention: tables are indexed big-endian, so the first variable is the
+//! most significant bit of the index and is the first one bound.
+
+use crate::fs_transcript::Transcript;
+use alloc::vec::Vec;
+use ark_ff::PrimeField;
+
+/// The table `eq(r, x)` for all `x ∈ {0,1}^len(r)`.
+pub fn eq_table<F: PrimeField>(r: &[F]) -> Vec<F> {
+    let mut table = alloc::vec![F::one()];
+    for ri in r {
+        let mut next = Vec::with_capacity(table.len() * 2);
+        for v in &table {
+            let hi = *v * ri;
+            next.push(*v - hi);
+            next.push(hi);
+        }
+        table = next;
+    }
+    table
+}
+
+/// `eq(r, index)` for a single boolean index.
+pub fn eq_at<F: PrimeField>(r: &[F], index: usize) -> F {
+    let n = r.len();
+    (0..n).fold(F::one(), |acc, j| {
+        if (index >> (n - 1 - j)) & 1 == 1 {
+            acc * r[j]
+        } else {
+            acc * (F::one() - r[j])
+        }
+    })
+}
+
+/// Binds the first variable of a table to `r`, halving it.
+pub fn bind<F: PrimeField>(table: &mut Vec<F>, r: F) {
+    let half = table.len() / 2;
+    for j in 0..half {
+        let lo = table[j];
+        table[j] = lo + r * (table[j + half] - lo);
+    }
+    table.truncate(half);
+}
+
+/// Evaluates at `r` the polynomial of degree `evals.len() − 1` given by its
+/// values at `0, 1, …, d`.
+pub fn interpolate<F: PrimeField>(evals: &[F], r: F) -> F {
+    let d = evals.len();
+    (0..d).fold(F::zero(), |acc, i| {
+        let (mut num, mut den) = (F::one(), F::one());
+        for j in 0..d {
+            if i != j {
+                num *= r - F::from(j as u64);
+                den *= F::from(i as u64) - F::from(j as u64);
+            }
+        }
+        acc + evals[i] * num * den.inverse().expect("distinct nodes")
+    })
+}
+
+/// Runs the prover side of a sum-check over `tables`, where the summand at
+/// each point is `combine(values of every table)`, a polynomial of degree
+/// `degree` in the tables. Each round sends the evaluations at
+/// `0, 2, …, degree` (the one at `1` is implied by the running claim).
+///
+/// Returns the round messages and the challenge point; the tables are left
+/// fully bound (length 1).
+pub fn prove<F: PrimeField>(
+    tables: &mut [Vec<F>],
+    degree: usize,
+    combine: impl Fn(&[F]) -> F,
+    transcript: &mut Transcript,
+) -> (Vec<F>, Vec<F>) {
+    let rounds = tables[0].len().trailing_zeros() as usize;
+    let mut messages = Vec::with_capacity(rounds * degree);
+    let mut point = Vec::with_capacity(rounds);
+    let mut scratch = alloc::vec![F::zero(); tables.len()];
+    for _ in 0..rounds {
+        let half = tables[0].len() / 2;
+        let mut evals = alloc::vec![F::zero(); degree + 1];
+        for j in 0..half {
+            for (t, eval) in evals.iter_mut().enumerate() {
+                if t == 1 {
+                    continue;
+                }
+                let t_f = F::from(t as u64);
+                for (slot, table) in scratch.iter_mut().zip(tables.iter()) {
+                    *slot = table[j] + t_f * (table[j + half] - table[j]);
+                }
+                *eval += combine(&scratch);
+            }
+        }
+        let round: Vec<F> = evals
+            .iter()
+            .enumerate()
+            .filter(|(t, _)| *t != 1)
+            .map(|(_, e)| *e)
+            .collect();
+        transcript.absorb(b"sumcheck-round", &round);
+        let r: F = transcript.challenge();
+        for table in tables.iter_mut() {
+            bind(table, r);
+        }
+        messages.extend(round);
+        point.push(r);
+    }
+    (messages, point)
+}
+
+/// Verifier side: reduces `claim` to a claim about the summand at the
+/// returned point. Returns `None` if the proof is malformed.
+pub fn verify<F: PrimeField>(
+    mut claim: F,
+    rounds: usize,
+    degree: usize,
+    messages: &[F],
+    transcript: &mut Transcript,
+) -> Option<(F, Vec<F>)> {
+    if messages.len() != rounds * degree {
+        return None;
+    }
+    let mut point = Vec::with_capacity(rounds);
+    for round in messages.chunks(degree) {
+        // evals at 0, 1, 2, …, degree with p(1) = claim − p(0).
+        let mut evals = Vec::with_capacity(degree + 1);
+        evals.push(round[0]);
+        evals.push(claim - round[0]);
+        evals.extend_from_slice(&round[1..]);
+        transcript.absorb(b"sumcheck-round", &round.to_vec());
+        let r: F = transcript.challenge();
+        claim = interpolate(&evals, r);
+        point.push(r);
+    }
+    Some((claim, point))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_ff::UniformRand;
+    use ark_pallas::Fr;
+    use ark_std::test_rng;
+
+    #[test]
+    fn sumcheck_round_trip_and_rejection() {
+        let mut rng = test_rng();
+        let n = 32;
+        let a: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let b: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let c: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let claim: Fr = (0..n).map(|i| a[i] * b[i] * c[i]).sum();
+
+        let mut tables = [a.clone(), b.clone(), c.clone()];
+        let mut tr = Transcript::new(b"test");
+        let (msgs, point) = prove(&mut tables, 3, |v| v[0] * v[1] * v[2], &mut tr);
+
+        let mut tr = Transcript::new(b"test");
+        let (last, vpoint) = verify(claim, 5, 3, &msgs, &mut tr).unwrap();
+        assert_eq!(point, vpoint);
+        // The reduced claim is the product of the three MLEs at the point.
+        let eq = eq_table(&point);
+        let mle = |t: &[Fr]| -> Fr { t.iter().zip(&eq).map(|(x, e)| *x * e).sum() };
+        assert_eq!(last, mle(&a) * mle(&b) * mle(&c));
+        assert_eq!(tables[0][0], mle(&a));
+        assert_eq!(eq_at(&point, 13), eq[13]);
+
+        // A wrong claim or a tampered message ends in a wrong reduced claim.
+        let mut tr = Transcript::new(b"test");
+        let (bad, _) = verify(claim + Fr::from(1u64), 5, 3, &msgs, &mut tr).unwrap();
+        assert_ne!(bad, mle(&a) * mle(&b) * mle(&c));
+        let mut tampered = msgs.clone();
+        tampered[4] += Fr::from(1u64);
+        let mut tr = Transcript::new(b"test");
+        let (bad, bad_point) = verify(claim, 5, 3, &tampered, &mut tr).unwrap();
+        let eq = eq_table(&bad_point);
+        let mle = |t: &[Fr]| -> Fr { t.iter().zip(&eq).map(|(x, e)| *x * e).sum() };
+        assert_ne!(bad, mle(&a) * mle(&b) * mle(&c));
+        assert!(verify(claim, 5, 3, &msgs[1..], &mut Transcript::new(b"test")).is_none());
+    }
+}

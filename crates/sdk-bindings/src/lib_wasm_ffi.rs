@@ -83,7 +83,7 @@ impl ZenoLlullProver {
         self.inner.acc.compressed_size()
     }
 
-    /// Produces a zero-knowledge proof of the computation so far.
+    /// Produces a succinct zero-knowledge proof of the computation so far.
     pub fn finalize(&self) -> Result<Vec<u8>, JsError> {
         self.inner.finalize(&mut OsRng).map_err(js_err)
     }
@@ -106,7 +106,7 @@ impl ZenoLlullVerifier {
 
     /// Verifies a proof and returns the statement it proves; throws if invalid.
     pub fn verify(&self, proof: &[u8]) -> Result<Statement, JsError> {
-        let proof = self.params.verify_proof(proof).map_err(js_err)?;
+        let proof = self.params.verify_proof(proof).map_err(js_err)?.statement;
         Ok(Statement {
             steps: proof.i as u32,
             z0: proof.z0.iter().map(field_to_string).collect(),

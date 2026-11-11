@@ -37,6 +37,8 @@ pub enum IvcError {
     StateHashMismatch,
     /// The step circuit's arity differs from the one fixed at setup.
     ArityMismatch,
+    /// A succinct argument in a compressed proof did not verify.
+    InvalidSnark,
 }
 
 impl From<SynthesisError> for IvcError {
@@ -65,6 +67,7 @@ impl fmt::Display for IvcError {
             Self::NoSteps => write!(f, "an IVC proof needs at least one step"),
             Self::StateHashMismatch => write!(f, "IVC state hash mismatch"),
             Self::ArityMismatch => write!(f, "step circuit arity mismatch"),
+            Self::InvalidSnark => write!(f, "succinct argument verification failed"),
         }
     }
 }
@@ -170,13 +173,21 @@ where
         .synthesize(cs.clone())?;
         let shape2 = shape_from_cs(&cs)?;
 
+        // Keys are padded to a power of two so the final SNARK can open
+        // the committed vectors as multilinear polynomials.
         let ck1 = CommitmentKey::<Projective<P1>>::setup(
             &[label, b"/primary"].concat(),
-            shape1.num_vars.max(shape1.num_constraints),
+            shape1
+                .num_vars
+                .max(shape1.num_constraints)
+                .next_power_of_two(),
         );
         let ck2 = CommitmentKey::<Projective<P2>>::setup(
             &[label, b"/secondary"].concat(),
-            shape2.num_vars.max(shape2.num_constraints),
+            shape2
+                .num_vars
+                .max(shape2.num_constraints)
+                .next_power_of_two(),
         );
 
         // One digest binds both shapes and both commitment keys; it is the

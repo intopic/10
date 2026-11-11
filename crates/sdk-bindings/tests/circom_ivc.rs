@@ -71,9 +71,9 @@ fn circom_ivc_end_to_end_with_zk_proof() {
     let proof = ivc.finalize(&mut rng).unwrap();
     let verifier = CircomParams::setup(R1CS).unwrap();
     let statement = verifier.verify_proof(&proof).unwrap();
-    assert_eq!(statement.i, 3);
-    assert_eq!(statement.z0, vec![Fr::from(3u64)]);
-    assert_eq!(statement.zi, ivc.acc.zi);
+    assert_eq!(statement.statement.i, 3);
+    assert_eq!(statement.statement.z0, vec![Fr::from(3u64)]);
+    assert_eq!(statement.statement.zi, ivc.acc.zi);
 
     // Corrupted or truncated proofs are rejected.
     let mut bad = proof.clone();

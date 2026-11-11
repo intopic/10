@@ -41,16 +41,19 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 
 ## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` 🚧
 
-KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur**.
+KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur** (prova: ~10 KB, pa kontratë).
 
 - [x] Palosja e plotë relaksuar-me-relaksuar (`E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`)
 - [x] Maskimi zero-knowledge: palosje me një çift të relaksuar të rastësishëm
       (`sample_relaxed`), dëshmia e hapur `W' = W + r·W_rand` është uniforme
-- [x] `ZkIvcProof::prove / verify`, serializim, teste negative
-- [ ] Kompresim i shkurtër: SNARK mbi akumulatorin (Spartan + IPA, pa Trusted Setup).
-      Prova aktuale ZK është lineare në madhësinë e qarkut (MB, jo KB)
-- [ ] `contracts/ZenoLlullVerifier.sol` me `verifyFoldedProof` dhe `protocolFee`.
-      < 300k gas kërkon mbështjellje Groth16/PlonK (me Trusted Setup) mbi BN254
+- [x] `ZkIvcProof::prove / verify` (varianti i pakompresuar), serializim, teste negative
+- [x] Kompresues i shkurtër pa Trusted Setup dhe pa FFT: dy sum-check (stil Spartan) +
+      argument i produktit të brendshëm (IPA) mbi vetë gjeneratorët Pedersen të palosjes
+- [x] `CompressedIvcProof`: 1.46 MB → ~10 KB, e pavarur nga numri i hapave, logaritmike
+      në madhësinë e qarkut; 16 teste mutacioni refuzohen; kufi 16 KiB i detyruar në CI
+- [x] CLI `zeno-decider --steps N --log-constraints K --cycle pasta|bn254`
+- [ ] Prova < 4 KB: kërkon akumulim në një kurbë (CycleFold) + angazhime me çiftëzim (KZG)
+- [ ] `contracts/ZenoLlullVerifier.sol` me `verifyFoldedProof` dhe `protocolFee`
 - [ ] Teste Foundry me matje gazi në CI
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
@@ -87,7 +90,9 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 | WASM (Node.js, 1 fije, qark Circom) | ~1.3 s / hap, ~161 MiB memorie |
-| Prova ZK (qark Circom minimal) | ~1.37 MB (jo e shkurtër) |
+| Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
+| Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
+| Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |
 
 Koha dominohet nga dy MSM-të për hap (`comm_W` dhe `comm_T`) mbi dëshmi të
 dendura; KPI-ja < 50 ms/hap në 2^16 **nuk** arrihet në 4 vCPU me MSM-në
