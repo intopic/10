@@ -1,0 +1,26 @@
+[package]
+name = "sdk-bindings"
+description = "Zeno-Llull SDK: Circom R1CS front-end and WebAssembly bindings"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zeno-ivc = { path = "../zeno-ivc", default-features = false }
+decider-zk = { path = "../decider-zk", default-features = false }
+ark-ff.workspace = true
+ark-serialize.workspace = true
+ark-bn254.workspace = true
+ark-grumpkin.workspace = true
+rand = { version = "0.8", default-features = false, features = ["getrandom"] }
+wasm-bindgen = "=0.2.130"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+default = []
+parallel = ["zeno-ivc/parallel", "decider-zk/parallel"]

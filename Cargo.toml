@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core-r1cs", "crates/llull-folder", "crates/zeno-ivc", "crates/decider-zk"]
+members = ["crates/core-r1cs", "crates/llull-folder", "crates/zeno-ivc", "crates/decider-zk", "crates/sdk-bindings"]
 
 [workspace.package]
 version = "0.1.0"

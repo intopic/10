@@ -17,4 +17,4 @@ pub mod step_circuits;
 
 pub use ivc_stepper::{IvcError, IvcParams, ZenoAccumulator};
 pub use nova_ivc_circuit::{AugmentedCircuit, StepCircuit};
-pub use step_circuits::{CubicStep, TrivialStep};
+pub use step_circuits::{CubicStep, R1csStep, TrivialStep};

@@ -47,6 +47,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target wasm32-unknown-unknown -p core-r1cs -p llull-folder -p zeno-ivc -p decider-zk --no-default-features --lib
 
+  wasm-sdk:
+    name: "@zenollull/wasm-sdk — build + test Node.js"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.130
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: ./scripts/build-wasm-sdk.sh
+      - name: IVC over a Circom circuit in WebAssembly, memory <= 512 MiB
+        run: node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zenollull-wasm-sdk
+          path: |
+            sdk/wasm/package.json
+            sdk/wasm/README.md
+            sdk/wasm/dist
+
   kpi:
     name: KPI — fold t=100, IVC, memorie
     runs-on: ubuntu-latest

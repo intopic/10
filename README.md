@@ -14,6 +14,8 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 | `crates/core-r1cs` | Matricat CSR `A, B, C`, R1CS e relaksuar, instanca `U` dhe dëshmia `W` |
 | `crates/llull-folder` | Pedersen, vektori `T` i Llull-it, transkripti Poseidon, `nifs_prove` / `nifs_verify`, CLI |
 | `crates/decider-zk` | Maskimi zero-knowledge dhe prova përfundimtare `ZkIvcProof` |
+| `crates/sdk-bindings` | Hyrje nga Circom (`.r1cs`/`.wtns`) dhe API WebAssembly/TypeScript |
+| `sdk/wasm` | Paketa NPM `@zenollull/wasm-sdk` me test Node.js |
 | `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetika jo-native, stepper IVC mbi ciklin 2-kurbësh, CLI |
 
 ## Përdorimi

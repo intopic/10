@@ -53,15 +53,20 @@ KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur**.
       < 300k gas kërkon mbështjellje Groth16/PlonK (me Trusted Setup) mbi BN254
 - [ ] Teste Foundry me matje gazi në CI
 
-## Faza 4 — Paketa SDK për treg `sdk-bindings` ⏳
+## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
-KPI: memorie maksimale ≤ 512 MB në shfletues/celular.
+KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM** (≈161 MiB, e detyruar në CI).
 
-- [ ] Paketa NPM `@zenollull/wasm-sdk` (wasm-bindgen + tipe TypeScript)
+- [x] Hyrje nga Circom: analizues `.r1cs` / `.wtns`, `R1csStep` (çdo R1CS i jashtëm si funksion hapi)
+- [x] `CircomIvc`: IVC mbi BN254/Grumpkin me dëshmi nga gjeneruesi i Circom-it
+- [x] Paketa NPM `@zenollull/wasm-sdk` (wasm-bindgen, tipe TypeScript, Node.js + shfletues)
+- [x] Test fund-më-fund në Node.js në CI: 25 hapa, provë ZK, verifikues i pavarur, kufi memorie
+- [ ] Publikimi në NPM (kërkon llogari/token të organizatës `@zenollull`)
 - [ ] Lidhje FFI: Swift (XCFramework), Kotlin (AAR/JNI), Python (zkML)
 - [ ] `ZenoLlull-Cloud-Prover`: `POST /v1/fold-step`, `POST /v1/finalize-snark`, Docker
-- [ ] Matja e përdorimit dhe çelësi i licencës (`EnterpriseLicenseKey`)
-- [ ] Pipeline release CI/CD për tri paketat A / B / C
+- [ ] Matja e përdorimit dhe çelësi i licencës (`EnterpriseLicenseKey`) — kërkon çelës nënshkrimi të shitësit
+- [ ] Shumë-fije në WASM (aktualisht një fije: ~1.3 s / hap)
+- [ ] Hyrje nga Noir dhe ONNX (zkML)
 
 ## Avancime opsionale (spec §4)
 
@@ -81,6 +86,8 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular.
 | Faza 2 — hap i plotë IVC, hap me 2^16 kufizime | ~415 ms |
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
+| WASM (Node.js, 1 fije, qark Circom) | ~1.3 s / hap, ~161 MiB memorie |
+| Prova ZK (qark Circom minimal) | ~1.37 MB (jo e shkurtër) |
 
 Koha dominohet nga dy MSM-të për hap (`comm_W` dhe `comm_T`) mbi dëshmi të
 dendura; KPI-ja < 50 ms/hap në 2^16 **nuk** arrihet në 4 vCPU me MSM-në
