@@ -259,3 +259,36 @@ fn poseidon_sbox_is_a_permutation_on_all_supported_fields() {
     check::<ark_bn254::Fq>();
     check::<ark_bn254::Fr>();
 }
+
+#[test]
+fn relaxed_relaxed_folding_and_random_masking() {
+    use llull_folder::{nifs_prove_relaxed, nifs_verify_relaxed, sample_relaxed};
+    type C = ark_pallas::Projective;
+    let mut rng = test_rng();
+    let (pp, shape, u1, w1) = fold_chain::<C>(4, 8);
+
+    // A random relaxed pair satisfies the relation by construction.
+    let (u2, w2) = sample_relaxed(&pp.ck, &shape, &mut rng);
+    check_accumulator(&pp.ck, &shape, &u2, &w2).unwrap();
+
+    // Folding two relaxed pairs (r² terms included) preserves satisfaction,
+    // and the verifier agrees with the prover.
+    let (u, w, comm_t) = nifs_prove_relaxed(&pp, &shape, &u1, &w1, &u2, &w2, &mut rng).unwrap();
+    check_accumulator(&pp.ck, &shape, &u, &w).unwrap();
+    assert_eq!(
+        nifs_verify_relaxed(&pp.poseidon, pp.digest, &u1, &u2, &comm_t),
+        u
+    );
+    // The mask changes every witness coordinate.
+    assert!(w.w.iter().zip(&w1.w).all(|(a, b)| a != b));
+
+    // An unsatisfied accumulator stays unsatisfied after masking.
+    let mut bad = w1.clone();
+    bad.w[0] += ark_pallas::Fr::one();
+    let bad_u = RelaxedR1CSInstance {
+        comm_w: pp.ck.commit(&bad.w, bad.r_w),
+        ..u1.clone()
+    };
+    let (u, w, _) = nifs_prove_relaxed(&pp, &shape, &bad_u, &bad, &u2, &w2, &mut rng).unwrap();
+    assert!(check_accumulator(&pp.ck, &shape, &u, &w).is_err());
+}

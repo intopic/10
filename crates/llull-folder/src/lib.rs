@@ -19,6 +19,7 @@ pub mod demo_circuit;
 
 pub use core_r1cs;
 pub use nifs_engine::{
-    check_accumulator, commit_witness, nifs_prove, nifs_verify, FoldError, PublicParams,
+    check_accumulator, commit_witness, nifs_prove, nifs_prove_relaxed, nifs_verify,
+    nifs_verify_relaxed, sample_relaxed, FoldError, PublicParams,
 };
 pub use pedersen::CommitmentKey;

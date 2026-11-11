@@ -4,7 +4,7 @@
 use crate::{
     llull_combinator::compute_cross_term,
     pedersen::CommitmentKey,
-    transcript::{fold_challenge, poseidon_config},
+    transcript::{fold_challenge, fold_challenge_relaxed, poseidon_config},
 };
 use alloc::vec::Vec;
 use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
@@ -175,6 +175,103 @@ fn fold_instance<C: CurveGroup>(
         comm_w: u1.comm_w + u2.comm_w * r,
         x: u1.x.iter().zip(&u2.x).map(|(a, b)| *a + r * b).collect(),
     }
+}
+
+/// Prover: folds two *relaxed* pairs with the full equations of spec §2.4:
+/// `E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`.
+pub fn nifs_prove_relaxed<C: CurveGroup>(
+    pp: &PublicParams<C>,
+    shape: &R1CSShape<C::ScalarField>,
+    u1: &RelaxedR1CSInstance<C>,
+    w1: &RelaxedR1CSWitness<C>,
+    u2: &RelaxedR1CSInstance<C>,
+    w2: &RelaxedR1CSWitness<C>,
+    rng: &mut impl RngCore,
+) -> Result<(RelaxedR1CSInstance<C>, RelaxedR1CSWitness<C>, C), FoldError>
+where
+    C::BaseField: PrimeField + Absorb,
+{
+    let z1 = shape.z(&w1.w, &u1.x, u1.u)?;
+    let z2 = shape.z(&w2.w, &u2.x, u2.u)?;
+    let t = compute_cross_term(shape, &z1, &z2);
+    let r_t = C::ScalarField::rand(rng);
+    let comm_t = pp.ck.commit(&t, r_t);
+
+    let r = fold_challenge_relaxed(&pp.poseidon, pp.digest, u1, u2, &comm_t);
+    let r2 = r * r;
+    let w = cfg_iter!(w1.w)
+        .zip(cfg_iter!(w2.w))
+        .map(|(a, b)| *a + r * b)
+        .collect();
+    let e = cfg_iter!(w1.e)
+        .zip(cfg_iter!(t))
+        .zip(cfg_iter!(w2.e))
+        .map(|((e1, t), e2)| *e1 + r * t + r2 * e2)
+        .collect();
+    let folded_w = RelaxedR1CSWitness {
+        e,
+        r_e: w1.r_e + r * r_t + r2 * w2.r_e,
+        w,
+        r_w: w1.r_w + r * w2.r_w,
+    };
+    Ok((fold_relaxed_instance(u1, u2, &comm_t, r), folded_w, comm_t))
+}
+
+/// Verifier counterpart of [`nifs_prove_relaxed`].
+pub fn nifs_verify_relaxed<C: CurveGroup>(
+    poseidon: &PoseidonConfig<C::BaseField>,
+    pp_digest: C::BaseField,
+    u1: &RelaxedR1CSInstance<C>,
+    u2: &RelaxedR1CSInstance<C>,
+    comm_t: &C,
+) -> RelaxedR1CSInstance<C>
+where
+    C::BaseField: PrimeField + Absorb,
+{
+    let r = fold_challenge_relaxed(poseidon, pp_digest, u1, u2, comm_t);
+    fold_relaxed_instance(u1, u2, comm_t, r)
+}
+
+fn fold_relaxed_instance<C: CurveGroup>(
+    u1: &RelaxedR1CSInstance<C>,
+    u2: &RelaxedR1CSInstance<C>,
+    comm_t: &C,
+    r: C::ScalarField,
+) -> RelaxedR1CSInstance<C> {
+    RelaxedR1CSInstance {
+        comm_e: u1.comm_e + *comm_t * r + u2.comm_e * (r * r),
+        u: u1.u + r * u2.u,
+        comm_w: u1.comm_w + u2.comm_w * r,
+        x: u1.x.iter().zip(&u2.x).map(|(a, b)| *a + r * b).collect(),
+    }
+}
+
+/// Samples a uniformly random *satisfying* relaxed pair: random `(W, x, u)`
+/// with `E := (A·Z) ∘ (B·Z) − u·(C·Z)`. Folding an accumulator with such a
+/// pair perfectly masks its witness.
+pub fn sample_relaxed<C: CurveGroup>(
+    ck: &CommitmentKey<C>,
+    shape: &R1CSShape<C::ScalarField>,
+    rng: &mut impl RngCore,
+) -> (RelaxedR1CSInstance<C>, RelaxedR1CSWitness<C>) {
+    let mut rand_vec =
+        |n: usize| -> Vec<C::ScalarField> { (0..n).map(|_| UniformRand::rand(rng)).collect() };
+    let w = rand_vec(shape.num_vars);
+    let x = rand_vec(shape.num_io);
+    let scalars = rand_vec(3);
+    let (u, r_w, r_e) = (scalars[0], scalars[1], scalars[2]);
+    let z = shape.z(&w, &x, u).expect("lengths match the shape");
+    let (az, bz, cz) = shape.mul_z(&z);
+    let e: Vec<_> = (0..shape.num_constraints)
+        .map(|i| az[i] * bz[i] - u * cz[i])
+        .collect();
+    let instance = RelaxedR1CSInstance {
+        comm_e: ck.commit(&e, r_e),
+        u,
+        comm_w: ck.commit(&w, r_w),
+        x,
+    };
+    (instance, RelaxedR1CSWitness { e, r_e, w, r_w })
 }
 
 /// Full (non-succinct) decider: the accumulator satisfies the relaxed R1CS

@@ -26,6 +26,8 @@ pub const HASH_BITS: usize = 250;
 pub const DOMAIN_FOLD: u64 = 1;
 /// Domain separator of the IVC state hash.
 pub const DOMAIN_STATE: u64 = 2;
+/// Domain separator of the challenge folding two relaxed instances.
+pub const DOMAIN_FOLD_RELAXED: u64 = 3;
 
 const FULL_ROUNDS: usize = 8;
 const PARTIAL_ROUNDS: usize = 60;
@@ -155,4 +157,28 @@ where
     let mut sponge = PoseidonSponge::new(config);
     sponge.absorb(&input);
     sponge.squeeze_bits(HASH_BITS)
+}
+
+/// The challenge `r = H(vk, U1, U2, comm_T)` for folding two *relaxed*
+/// instances (used by the zero-knowledge masking layer).
+pub fn fold_challenge_relaxed<C: CurveGroup>(
+    config: &PoseidonConfig<C::BaseField>,
+    pp_digest: C::BaseField,
+    u1: &RelaxedR1CSInstance<C>,
+    u2: &RelaxedR1CSInstance<C>,
+    comm_t: &C,
+) -> C::ScalarField
+where
+    C::BaseField: PrimeField + Absorb,
+{
+    let mut input = Vec::with_capacity(24 + 4 * u1.x.len());
+    input.push(C::BaseField::from(DOMAIN_FOLD_RELAXED));
+    input.push(pp_digest);
+    absorb_relaxed(&mut input, u1);
+    absorb_relaxed(&mut input, u2);
+    input.extend(point_to_coords(comm_t));
+
+    let mut sponge = PoseidonSponge::new(config);
+    sponge.absorb(&input);
+    bits_to_field(&sponge.squeeze_bits(CHALLENGE_BITS))
 }

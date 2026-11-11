@@ -39,13 +39,18 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 - [ ] KPI i kohës: MSM me bazë fikse dhe tabela të parallogaritura, cache i `AZ, BZ, CZ`,
       sintezë pa mbingarkesën e `ark-relations`
 
-## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` ⏳
+## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` 🚧
 
-KPI: prova finale < 4 KB; kosto EVM < 300k gas.
+KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur**.
 
-- [ ] Maskimi zero-knowledge i akumulatorit para kompresimit
-- [ ] SNARK përfundimtar mbi akumulatorin `(U_t, W_t)`
-- [ ] `contracts/ZenoLlullVerifier.sol` me `verifyFoldedProof` dhe `protocolFee`
+- [x] Palosja e plotë relaksuar-me-relaksuar (`E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`)
+- [x] Maskimi zero-knowledge: palosje me një çift të relaksuar të rastësishëm
+      (`sample_relaxed`), dëshmia e hapur `W' = W + r·W_rand` është uniforme
+- [x] `ZkIvcProof::prove / verify`, serializim, teste negative
+- [ ] Kompresim i shkurtër: SNARK mbi akumulatorin (Spartan + IPA, pa Trusted Setup).
+      Prova aktuale ZK është lineare në madhësinë e qarkut (MB, jo KB)
+- [ ] `contracts/ZenoLlullVerifier.sol` me `verifyFoldedProof` dhe `protocolFee`.
+      < 300k gas kërkon mbështjellje Groth16/PlonK (me Trusted Setup) mbi BN254
 - [ ] Teste Foundry me matje gazi në CI
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` ⏳

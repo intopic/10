@@ -360,6 +360,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "decider-zk"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-crypto-primitives",
+ "ark-ec",
+ "ark-ff",
+ "ark-grumpkin",
+ "ark-pallas",
+ "ark-serialize",
+ "ark-std",
+ "ark-vesta",
+ "core-r1cs",
+ "llull-folder",
+ "zeno-ivc",
+]
+
+[[package]]
 name = "derivative"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
