@@ -20,6 +20,12 @@ use core_r1cs::{R1CSInstance, RelaxedR1CSInstance};
 pub const CHALLENGE_BITS: usize = 128;
 /// Bit length of the limbs used to absorb scalar-field elements.
 pub const LIMB_BITS: usize = 128;
+/// Bit length of IVC state hashes; small enough to embed in both fields of a cycle.
+pub const HASH_BITS: usize = 250;
+/// Domain separator of the folding challenge.
+pub const DOMAIN_FOLD: u64 = 1;
+/// Domain separator of the IVC state hash.
+pub const DOMAIN_STATE: u64 = 2;
 
 const FULL_ROUNDS: usize = 8;
 const PARTIAL_ROUNDS: usize = 60;
@@ -108,7 +114,8 @@ pub fn fold_challenge<C: CurveGroup>(
 where
     C::BaseField: PrimeField + Absorb,
 {
-    let mut input = Vec::with_capacity(16 + 4 * u1.x.len());
+    let mut input = Vec::with_capacity(17 + 4 * u1.x.len());
+    input.push(C::BaseField::from(DOMAIN_FOLD));
     input.push(pp_digest);
     absorb_relaxed(&mut input, u1);
     input.extend(point_to_coords(&u2.comm_w));
@@ -120,4 +127,32 @@ where
     let mut sponge = PoseidonSponge::new(config);
     sponge.absorb(&input);
     bits_to_field(&sponge.squeeze_bits(CHALLENGE_BITS))
+}
+
+/// The IVC state hash `H(vk, i, z_0, z_i, U_i)` (spec §2.6), returned as
+/// `HASH_BITS` little-endian bits. It is computed over the base field of the
+/// curve `C` whose instances are being accumulated, i.e. the native field of
+/// the recursive circuit that folds them.
+pub fn state_hash<C: CurveGroup>(
+    config: &PoseidonConfig<C::BaseField>,
+    pp_digest: C::BaseField,
+    i: u64,
+    z0: &[C::BaseField],
+    zi: &[C::BaseField],
+    u: &RelaxedR1CSInstance<C>,
+) -> Vec<bool>
+where
+    C::BaseField: PrimeField + Absorb,
+{
+    let mut input = Vec::with_capacity(13 + z0.len() + zi.len() + 2 * u.x.len());
+    input.push(C::BaseField::from(DOMAIN_STATE));
+    input.push(pp_digest);
+    input.push(C::BaseField::from(i));
+    input.extend_from_slice(z0);
+    input.extend_from_slice(zi);
+    absorb_relaxed(&mut input, u);
+
+    let mut sponge = PoseidonSponge::new(config);
+    sponge.absorb(&input);
+    sponge.squeeze_bits(HASH_BITS)
 }

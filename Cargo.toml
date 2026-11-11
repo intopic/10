@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core-r1cs", "crates/llull-folder"]
+members = ["crates/core-r1cs", "crates/llull-folder", "crates/zeno-ivc"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ ark-vesta = { version = "0.5", default-features = false }
 ark-bn254 = { version = "0.5", default-features = false, features = ["curve"] }
 ark-grumpkin = { version = "0.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
+num-bigint = { version = "0.4", default-features = false }
 rayon = "1"
 rand = "0.8"
 

@@ -1,0 +1,56 @@
+[package]
+name = "zeno-ivc"
+description = "Zeno-Llull IVC: recursive folding verifier circuit over a 2-cycle of curves with a constant-size accumulator"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-r1cs = { path = "../core-r1cs", default-features = false, features = ["arkworks-bridge"] }
+llull-folder = { path = "../llull-folder", default-features = false }
+ark-ff.workspace = true
+ark-ec.workspace = true
+ark-std.workspace = true
+ark-serialize.workspace = true
+ark-relations.workspace = true
+ark-r1cs-std.workspace = true
+ark-crypto-primitives = { workspace = true, features = ["r1cs"] }
+num-bigint.workspace = true
+sha2.workspace = true
+# CLI-only dependencies
+ark-pallas = { workspace = true, optional = true }
+ark-vesta = { workspace = true, optional = true }
+ark-bn254 = { workspace = true, optional = true }
+ark-grumpkin = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+ark-pallas.workspace = true
+ark-vesta.workspace = true
+ark-bn254.workspace = true
+ark-grumpkin.workspace = true
+
+[features]
+default = ["parallel", "cli"]
+parallel = [
+    "llull-folder/parallel",
+    "core-r1cs/parallel",
+    "ark-ff/parallel",
+    "ark-ec/parallel",
+    "ark-std/parallel",
+    "ark-r1cs-std/parallel",
+    "ark-crypto-primitives/parallel",
+]
+cli = [
+    "dep:ark-pallas",
+    "dep:ark-vesta",
+    "dep:ark-bn254",
+    "dep:ark-grumpkin",
+    "dep:rand",
+    "ark-std/std",
+]
+
+[[bin]]
+name = "zeno-ivc"
+path = "src/bin/zeno-ivc.rs"
+required-features = ["cli"]

@@ -13,6 +13,7 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 |---|---|
 | `crates/core-r1cs` | Matricat CSR `A, B, C`, R1CS e relaksuar, instanca `U` dhe dëshmia `W` |
 | `crates/llull-folder` | Pedersen, vektori `T` i Llull-it, transkripti Poseidon, `nifs_prove` / `nifs_verify`, CLI |
+| `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetika jo-native, stepper IVC mbi ciklin 2-kurbësh, CLI |
 
 ## Përdorimi
 
@@ -24,10 +25,16 @@ cargo test --workspace
 cargo run --release -p llull-folder -- fold --steps 100 --log-constraints 16 --curve pallas
 ```
 
+IVC e plotë rekursive (çdo hap verifikon palosjen e hapit të mëparshëm):
+
+```bash
+cargo run --release -p zeno-ivc -- prove --steps 100 --log-constraints 12 --cycle pasta
+```
+
 Ndërtimi për shfletues/celular:
 
 ```bash
-cargo build --release --target wasm32-unknown-unknown -p llull-folder --no-default-features --lib
+cargo build --release --target wasm32-unknown-unknown -p llull-folder -p zeno-ivc --no-default-features --lib
 ```
 
 ## Matematika në një rresht

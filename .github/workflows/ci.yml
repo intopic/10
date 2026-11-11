@@ -34,7 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
-      - run: cargo test --workspace --no-default-features --features llull-folder/cli
+      - run: cargo test --workspace --no-default-features --features llull-folder/cli,zeno-ivc/cli
 
   wasm:
     name: wasm32 build
@@ -45,17 +45,23 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target wasm32-unknown-unknown -p core-r1cs -p llull-folder --no-default-features --lib
+      - run: cargo build --release --target wasm32-unknown-unknown -p core-r1cs -p llull-folder -p zeno-ivc --no-default-features --lib
 
   kpi:
-    name: KPI — Faza 1 (fold t=100)
+    name: KPI — fold t=100, IVC, memorie
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p llull-folder
-      - name: Fold 100 steps of a 2^16-constraint circuit (Pallas)
+      - run: cargo build --release -p llull-folder -p zeno-ivc
+      - name: "Faza 1: fold 100 steps of a 2^16-constraint circuit (Pallas)"
         run: ./target/release/llull-folder fold --steps 100 --log-constraints 16 --curve pallas | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Fold 100 steps of a 2^14-constraint circuit (BN254)
+      - name: "Faza 1: fold 100 steps of a 2^14-constraint circuit (BN254)"
         run: ./target/release/llull-folder fold --steps 100 --log-constraints 14 --curve bn254 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: "Faza 2: IVC 100 steps, Pallas/Vesta, RSS <= 512 MiB"
+        run: ./target/release/zeno-ivc prove --steps 100 --log-constraints 12 --cycle pasta --max-rss-mib 512 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: "Faza 2: IVC 30 steps, BN254/Grumpkin, RSS <= 512 MiB"
+        run: ./target/release/zeno-ivc prove --steps 30 --log-constraints 12 --cycle bn254 --max-rss-mib 512 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: "Faza 2: IVC 20 steps of a 2^16-constraint step, RSS <= 512 MiB"
+        run: ./target/release/zeno-ivc prove --steps 20 --log-constraints 16 --cycle pasta --max-rss-mib 512 | tee -a "$GITHUB_STEP_SUMMARY"

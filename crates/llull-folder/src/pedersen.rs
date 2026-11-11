@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::Zero;
+use ark_ff::{One, Zero};
 use ark_std::cfg_into_iter;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -67,13 +67,30 @@ impl<C: CurveGroup> CommitmentKey<C> {
     }
 
     /// `Com(v; r) = Σ v_i·G_i + r·H`. Panics if `v` is longer than the key.
+    ///
+    /// Circuit witnesses are dominated by zeros and ones (bit decompositions),
+    /// so those are handled by plain point additions and only the remaining
+    /// scalars go through the multi-scalar multiplication.
     pub fn commit(&self, v: &[C::ScalarField], r: C::ScalarField) -> C {
         assert!(v.len() <= self.gens.len(), "commitment key too short");
-        let msm = if v.iter().all(Zero::is_zero) {
+        let mut ones = C::zero();
+        let mut bases = Vec::new();
+        let mut scalars = Vec::new();
+        for (s, g) in v.iter().zip(&self.gens) {
+            if s.is_zero() {
+                continue;
+            } else if s.is_one() {
+                ones += g;
+            } else {
+                bases.push(*g);
+                scalars.push(*s);
+            }
+        }
+        let msm = if scalars.is_empty() {
             C::zero()
         } else {
-            C::msm_unchecked(&self.gens[..v.len()], v)
+            C::msm_unchecked(&bases, &scalars)
         };
-        msm + self.h * r
+        msm + ones + self.h * r
     }
 }

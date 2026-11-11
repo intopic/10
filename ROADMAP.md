@@ -24,15 +24,20 @@ KPI: pas palosjes së `t = 100` hapave kalon `(AZ) ∘ (BZ) == u·CZ + E` me 0 g
 - [x] Teste: KPI në Pallas, Vesta, BN254, Grumpkin; identiteti i ek. 8; teste negative
 - [x] CLI `llull-folder fold --steps N --log-constraints K --curve pallas|bn254`
 
-## Faza 2 — Qarku rekursiv 2-kurbësh `zeno-ivc` ⏳
+## Faza 2 — Qarku rekursiv 2-kurbësh `zeno-ivc` 🚧
 
-KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime).
+KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa arritur**, shih matjet.
 
-- [ ] Gadget-ët në qark: sfungjer Poseidon, pikë kurbe, palosja e instancës (`NIFS.Verify`)
-- [ ] Qarku i zgjeruar `F'`: `z_t = F(z_{t-1})`, kontrolli i hash-it, dalja `x_t = H(vk, t, z_0, z_t, U_t)`
-- [ ] Cikli Pallas/Vesta dhe BN254/Grumpkin; `IVCProof` me verifikim të plotë
-- [ ] Optimizim i provuesit drejt KPI: MSM për `T`, SpMV paralele, shmangie alokimesh
-- [ ] Akumulator me memorie konstante: teste që RSS nuk rritet me `t`
+- [x] Gadget jo-nativ `c ≡ a + r·x (mod p)` me CRT (mod `n` dhe mod `2^128`), ~700 kufizime
+- [x] Qarku i zgjeruar `F'`: `z_{i+1} = F(z_i)`, kontrolli i hash-it, `NIFS.Verify` me 2 shumëzime
+      skalare, dalja `x = (u.x[1], H(vk, i+1, z_0, z_{i+1}, U'))`
+- [x] Stepper IVC `ZenoAccumulator`: `prove_step` / `verify`, i përgjithshëm mbi ciklin
+- [x] Ciklet Pallas/Vesta dhe BN254/Grumpkin, të testuara fund-më-fund
+- [x] Teste negative: pretendime të falsifikuara, hap mashtrues, parametra të tjerë
+- [x] Memorie konstante: RSS identike për 10, 100 dhe 400 hapa; e detyruar ≤ 512 MiB në CI
+- [x] CLI `zeno-ivc prove --steps N --log-constraints K --cycle pasta|bn254`
+- [ ] KPI i kohës: MSM me bazë fikse dhe tabela të parallogaritura, cache i `AZ, BZ, CZ`,
+      sintezë pa mbingarkesën e `ark-relations`
 
 ## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` ⏳
 
@@ -59,13 +64,20 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular.
 - [ ] SuperNova (IVC jo-uniforme) për zkVM
 - [ ] SIMD (AVX-512 / NEON) për SpMV dhe MSM
 
-## Matje aktuale (Faza 1, 4 bërthama CPU, Pallas, 2^16 kufizime)
+## Matje aktuale (4 vCPU, Pallas/Vesta)
 
 | Metrika | Vlera |
 |---|---|
-| Provuesi | ~148 ms / hap (dominohet nga MSM e `T`) |
-| Verifikuesi | ~0.5 ms / hap |
-| Instanca `U` | 170 bajt, konstante në `t` |
-| RSS maksimale pas 100 hapash | ~162 MiB |
+| Mbingarkesa e rekursionit (qarku primar) | ~11 200 kufizime |
+| Qarku sekondar | ~11 200 kufizime |
+| Faza 1 — vetëm `nifs_prove`, 2^16 kufizime | ~148 ms / hap |
+| Faza 1 — `nifs_verify` | ~0.5 ms / hap |
+| Faza 2 — hap i plotë IVC, hap me 2^8 kufizime | ~135 ms |
+| Faza 2 — hap i plotë IVC, hap me 2^16 kufizime | ~415 ms |
+| Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
+| RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 
-Shënim: KPI-ja < 50 ms/hap i përket Fazës 2 dhe ende **nuk** është arritur.
+Koha dominohet nga dy MSM-të për hap (`comm_W` dhe `comm_T`) mbi dëshmi të
+dendura; KPI-ja < 50 ms/hap në 2^16 **nuk** arrihet në 4 vCPU me MSM-në
+aktuale. Shifra "4 000 kufizime për hap" e specifikimit gjithashtu nuk arrihet:
+mbingarkesa reale e matur është ~11 200 kufizime.

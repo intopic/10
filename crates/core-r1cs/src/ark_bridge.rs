@@ -44,10 +44,12 @@ pub fn shape_from_cs<F: PrimeField>(
 }
 
 /// Extracts `(W, x)` from a constraint system synthesized in proving mode.
+///
+/// Assumes the default optimization goal (`Constraints`), under which
+/// finalization only inlines linear combinations and adds no variables.
 pub fn assignment_from_cs<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
 ) -> Result<(Vec<F>, Vec<F>), SynthesisError> {
-    cs.finalize();
     let inner = cs.borrow().ok_or(SynthesisError::MissingCS)?;
     let w = inner.witness_assignment.clone();
     let x = inner.instance_assignment[1..].to_vec();
