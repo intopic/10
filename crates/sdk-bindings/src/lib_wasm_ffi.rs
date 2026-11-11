@@ -93,6 +93,7 @@ impl ZenoLlullProver {
 #[wasm_bindgen]
 pub struct ZenoLlullVerifier {
     params: CircomParams,
+    verifications: u32,
 }
 
 #[wasm_bindgen]
@@ -101,11 +102,13 @@ impl ZenoLlullVerifier {
     pub fn new(r1cs: &[u8]) -> Result<ZenoLlullVerifier, JsError> {
         Ok(Self {
             params: CircomParams::setup(r1cs).map_err(js_err)?,
+            verifications: 0,
         })
     }
 
     /// Verifies a proof and returns the statement it proves; throws if invalid.
-    pub fn verify(&self, proof: &[u8]) -> Result<Statement, JsError> {
+    pub fn verify(&mut self, proof: &[u8]) -> Result<Statement, JsError> {
+        self.verifications += 1;
         let proof = self.params.verify_proof(proof).map_err(js_err)?.statement;
         Ok(Statement {
             steps: proof.i as u32,
@@ -113,6 +116,39 @@ impl ZenoLlullVerifier {
             zi: proof.zi.iter().map(field_to_string).collect(),
         })
     }
+}
+
+#[wasm_bindgen]
+impl ZenoLlullVerifier {
+    /// Number of proofs this instance was asked to verify, for usage
+    /// reporting under an enterprise license.
+    #[wasm_bindgen(getter)]
+    pub fn verifications(&self) -> u32 {
+        self.verifications
+    }
+}
+
+/// What a license key grants.
+#[wasm_bindgen(getter_with_clone)]
+pub struct License {
+    pub customer: String,
+    pub plan: String,
+    #[wasm_bindgen(js_name = expiresAt)]
+    pub expires_at: f64,
+}
+
+/// Verifies an `EnterpriseLicenseKey` against the vendor's public key
+/// (hex) at Unix time `now` (seconds); throws if it is invalid or expired.
+#[wasm_bindgen(js_name = verifyLicense)]
+pub fn verify_license(key: &str, vendor_public_key: &str, now: f64) -> Result<License, JsError> {
+    let err = |e: zeno_license::LicenseError| JsError::new(&e.to_string());
+    let public = zeno_license::parse_key_hex(vendor_public_key).map_err(err)?;
+    let claims = zeno_license::verify(key, &public, now as u64).map_err(err)?;
+    Ok(License {
+        customer: claims.customer,
+        plan: claims.plan,
+        expires_at: claims.expires_at as f64,
+    })
 }
 
 /// Current size of the WebAssembly linear memory in bytes (0 off-wasm).

@@ -1,0 +1,21 @@
+[package]
+name = "zeno-license"
+description = "Signed license keys (EnterpriseLicenseKey) for the Zeno-Llull SDK and Cloud Prover"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+rand = { workspace = true, optional = true }
+
+[features]
+default = ["cli"]
+# Key generation and the `zeno-license` tool (vendor side only).
+cli = ["dep:rand", "ed25519-dalek/rand_core", "ed25519-dalek/std"]
+
+[[bin]]
+name = "zeno-license"
+path = "src/bin/zeno-license.rs"
+required-features = ["cli"]

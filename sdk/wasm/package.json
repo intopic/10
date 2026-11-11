@@ -2,7 +2,6 @@
   "name": "@zenollull/wasm-sdk",
   "version": "0.1.0",
   "description": "Zeno-Llull recursive folding prover and verifier for browsers and Node.js (WebAssembly)",
-  "private": true,
   "main": "dist/node/sdk_bindings.js",
   "types": "dist/node/sdk_bindings.d.ts",
   "exports": {
@@ -13,7 +12,8 @@
       "default": "./dist/web/sdk_bindings.js"
     }
   },
-  "files": ["dist"],
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "restricted" },
   "scripts": {
     "build": "../../scripts/build-wasm-sdk.sh",
     "test": "node test/ivc.test.cjs"

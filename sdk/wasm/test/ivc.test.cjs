@@ -67,6 +67,18 @@ const wasmMiB = () => sdk.wasmMemoryBytes() / (1024 * 1024);
   assert.throws(() => new sdk.ZenoLlullProver(r1cs.subarray(0, 100), ["3"]), /malformed/);
   assert.throws(() => new sdk.ZenoLlullProver(r1cs, ["not-a-number"]), /invalid field element/);
 
+  assert.equal(verifier.verifications, 4);
+
+  // License keys: a syntactically valid key signed by nobody is refused.
+  assert.throws(() => sdk.verifyLicense("zl1.YQ.Yg", "00".repeat(32), Date.now() / 1000));
+  assert.throws(() => sdk.verifyLicense("nonsense", "00".repeat(32), 0), /malformed/);
+  if (process.env.ZENO_TEST_LICENSE) {
+    const lic = sdk.verifyLicense(process.env.ZENO_TEST_LICENSE, process.env.ZENO_LICENSE_PUBLIC_KEY, Date.now() / 1000);
+    assert.equal(lic.customer, "ci");
+    console.log(`license          : ${lic.customer} / ${lic.plan}`);
+    assert.throws(() => sdk.verifyLicense(process.env.ZENO_TEST_LICENSE, process.env.ZENO_LICENSE_PUBLIC_KEY, 4e9), /expired/);
+  }
+
   const peak = wasmMiB();
   console.log(`wasm memory      : ${memAfterFirst.toFixed(1)} MiB after step 1, ${peak.toFixed(1)} MiB at the end`);
   assert.ok(peak <= MAX_WASM_MIB, `wasm memory ${peak} MiB exceeds ${MAX_WASM_MIB} MiB`);

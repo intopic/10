@@ -16,6 +16,8 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 | `crates/decider-zk` | Maskimi zero-knowledge dhe prova e shkurtër `CompressedIvcProof` (sum-check + IPA), CLI |
 | `crates/evm-verifier` | Provuesi për kontratën: transkript Keccak, kodim ABI, vendimtar jashtë zinxhirit |
 | `contracts` | `ZenoLlullVerifier.sol` (palosje në zinxhir me precompile BN254) dhe testi i tij në EVM |
+| `crates/zeno-license` | Çelësa licence të nënshkruar (Ed25519) dhe mjeti i shitësit |
+| `crates/cloud-prover` | Shërbimi HTTP pay-per-proof me autentikim me licencë dhe matje përdorimi; `Dockerfile` |
 | `crates/sdk-bindings` | Hyrje nga Circom (`.r1cs`/`.wtns`) dhe API WebAssembly/TypeScript |
 | `sdk/wasm` | Paketa NPM `@zenollull/wasm-sdk` me test Node.js |
 | `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetika jo-native, stepper IVC mbi ciklin 2-kurbësh, CLI |

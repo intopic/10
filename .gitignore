@@ -4,3 +4,4 @@
 /sdk/wasm/dist
 /target
 node_modules/
+/sdk/wasm/*.tgz

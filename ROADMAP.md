@@ -73,10 +73,15 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] `CircomIvc`: IVC mbi BN254/Grumpkin me dëshmi nga gjeneruesi i Circom-it
 - [x] Paketa NPM `@zenollull/wasm-sdk` (wasm-bindgen, tipe TypeScript, Node.js + shfletues)
 - [x] Test fund-më-fund në Node.js në CI: 25 hapa, provë ZK, verifikues i pavarur, kufi memorie
-- [ ] Publikimi në NPM (kërkon llogari/token të organizatës `@zenollull`)
+- [x] `zeno-license`: `EnterpriseLicenseKey` i nënshkruar me Ed25519, verifikim offline vetëm me
+      çelësin publik; mjet shitësi `zeno-license keygen | issue | verify`; `verifyLicense` në WASM
+- [x] `ZenoLlull-Cloud-Prover` (axum): `POST /v1/sessions`, `POST /v1/fold-step`,
+      `POST /v1/finalize-snark`, `GET /v1/usage`; licenca është kredenciali i API-së (pa bazë çelësash)
+- [x] Matje pay-per-proof për klient me regjistër të lidhur me hash (SHA-256), që zbulon çdo
+      fshirje ose ndryshim; rikthehet pas rinisjes
+- [x] `Dockerfile` + test tymi në CI kundrejt kontejnerit
+- [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
 - [ ] Lidhje FFI: Swift (XCFramework), Kotlin (AAR/JNI), Python (zkML)
-- [ ] `ZenoLlull-Cloud-Prover`: `POST /v1/fold-step`, `POST /v1/finalize-snark`, Docker
-- [ ] Matja e përdorimit dhe çelësi i licencës (`EnterpriseLicenseKey`) — kërkon çelës nënshkrimi të shitësit
 - [ ] Shumë-fije në WASM (aktualisht një fije: ~1.3 s / hap)
 - [ ] Hyrje nga Noir dhe ONNX (zkML)
 

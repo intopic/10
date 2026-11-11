@@ -64,14 +64,19 @@ jobs:
           node-version: 22
       - run: ./scripts/build-wasm-sdk.sh
       - name: IVC over a Circom circuit in WebAssembly, memory <= 512 MiB
-        run: node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          cargo build --release -p zeno-license
+          eval "$(./target/release/zeno-license keygen)"
+          export ZENO_LICENSE_PRIVATE_KEY ZENO_LICENSE_PUBLIC_KEY
+          export ZENO_TEST_LICENSE="$(./target/release/zeno-license issue --customer ci --plan enterprise --days 1)"
+          node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: npm pack (publish-ready tarball)
+        run: npm pack
+        working-directory: sdk/wasm
       - uses: actions/upload-artifact@v4
         with:
           name: zenollull-wasm-sdk
-          path: |
-            sdk/wasm/package.json
-            sdk/wasm/README.md
-            sdk/wasm/dist
+          path: sdk/wasm/zenollull-wasm-sdk-*.tgz
 
   contracts:
     name: ZenoLlullVerifier.sol — EVM test + gas
@@ -88,6 +93,17 @@ jobs:
         working-directory: contracts
       - name: Fold on-chain against the Rust prover, gas < 300k per step
         run: node contracts/test/verifier.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+  cloud-prover:
+    name: ZenoLlull-Cloud-Prover — Docker image + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: docker build -t zenollull-cloud-prover .
+      - name: Pay-per-proof flow against the container
+        run: ./scripts/smoke-cloud-prover.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   kpi:
     name: KPI — fold t=100, IVC, memorie
