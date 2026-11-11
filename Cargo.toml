@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core-r1cs", "crates/llull-folder", "crates/zeno-ivc", "crates/decider-zk", "crates/sdk-bindings"]
+members = ["crates/core-r1cs", "crates/llull-folder", "crates/zeno-ivc", "crates/decider-zk", "crates/sdk-bindings", "crates/evm-verifier"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +22,7 @@ ark-bn254 = { version = "0.5", default-features = false, features = ["curve"] }
 ark-grumpkin = { version = "0.5", default-features = false }
 sha2 = { version = "0.10", default-features = false }
 num-bigint = { version = "0.4", default-features = false }
+sha3 = { version = "0.10", default-features = false }
 rayon = "1"
 rand = "0.8"
 

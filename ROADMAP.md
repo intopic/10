@@ -41,7 +41,8 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 
 ## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese `decider-zk` 🚧
 
-KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur** (prova: ~10 KB, pa kontratë).
+KPI: prova finale < 4 KB — **e pa arritur** (~10 KB). Kosto EVM < 300k gas — **arritur për palosjen
+në zinxhir** (~75k gas/hap); vendimtari i shkurtër verifikohet jashtë zinxhirit.
 
 - [x] Palosja e plotë relaksuar-me-relaksuar (`E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`)
 - [x] Maskimi zero-knowledge: palosje me një çift të relaksuar të rastësishëm
@@ -52,9 +53,17 @@ KPI: prova finale < 4 KB; kosto EVM < 300k gas — **ende e pa arritur** (prova:
 - [x] `CompressedIvcProof`: 1.46 MB → ~10 KB, e pavarur nga numri i hapave, logaritmike
       në madhësinë e qarkut; 16 teste mutacioni refuzohen; kufi 16 KiB i detyruar në CI
 - [x] CLI `zeno-decider --steps N --log-constraints K --cycle pasta|bn254`
-- [ ] Prova < 4 KB: kërkon akumulim në një kurbë (CycleFold) + angazhime me çiftëzim (KZG)
-- [ ] `contracts/ZenoLlullVerifier.sol` me `verifyFoldedProof` dhe `protocolFee`
-- [ ] Teste Foundry me matje gazi në CI
+- [x] `contracts/ZenoLlullVerifier.sol`: verifikues i palosjes në zinxhir (BN254, precompile
+      `ecMul`/`ecAdd`), `verifyFoldedProof(bytes, uint256[])`, sesione, zinxhirim i gjendjes
+      `z_out → z_in`, `finalize` me maskim ZK, `protocolFee` me tërheqje nga pronari
+- [x] `crates/evm-verifier`: transkript Keccak identik me kontratën, kodim ABI, `OnChainFolder`,
+      vendimtar jashtë zinxhirit `verify_final` kundrejt akumulatorit në zinxhir
+- [x] Test në EVM lokale (precompile reale BN254) në CI: akumulatori në zinxhir = ai i provuesit,
+      ~75k gas për hap (199k hapi i parë), kufi 300k i detyruar, kontroll aksesi dhe tarife
+- [ ] Vendimtar **në zinxhir**: IPA kërkon MSM mbi mijëra pika dhe nuk verifikohet dot në EVM;
+      kërkon akumulim në një kurbë (CycleFold) + KZG + mbështjellje Groth16 (Trusted Setup).
+      Deri atëherë vlefshmëria e dëshmisë së akumuluar verifikohet jashtë zinxhirit
+- [ ] Prova < 4 KB (e njëjta rrugë: CycleFold + KZG)
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
@@ -90,6 +99,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 | WASM (Node.js, 1 fije, qark Circom) | ~1.3 s / hap, ~161 MiB memorie |
+| `verifyFoldedProof` në EVM | ~75k gas (199k hapi i parë), `finalize` ~87k |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |

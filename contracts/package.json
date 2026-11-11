@@ -1,0 +1,16 @@
+{
+  "name": "zenollull-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZenoLlullVerifier.sol and its EVM tests",
+  "scripts": {
+    "test": "node test/verifier.test.cjs"
+  },
+  "devDependencies": {
+    "@ethereumjs/common": "^4.4.0",
+    "@ethereumjs/evm": "^3.1.1",
+    "@ethereumjs/statemanager": "^2.4.0",
+    "@ethereumjs/util": "^9.1.0",
+    "solc": "0.8.28"
+  }
+}

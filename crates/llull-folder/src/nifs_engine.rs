@@ -120,13 +120,33 @@ pub fn nifs_prove<C: CurveGroup>(
 where
     C::BaseField: PrimeField + Absorb,
 {
+    nifs_prove_with(&pp.ck, shape, u1, w1, u2, w2, rng, |comm_t| {
+        fold_challenge(&pp.poseidon, pp.digest, u1, u2, comm_t)
+    })
+}
+
+/// [`nifs_prove`] with a caller-supplied Fiat–Shamir challenge, a function of
+/// `comm_T` (and, through its captures, of the rest of the transcript). Used
+/// where the verifier is not a circuit, e.g. an EVM contract hashing with
+/// Keccak.
+#[allow(clippy::too_many_arguments)]
+pub fn nifs_prove_with<C: CurveGroup>(
+    ck: &CommitmentKey<C>,
+    shape: &R1CSShape<C::ScalarField>,
+    u1: &RelaxedR1CSInstance<C>,
+    w1: &RelaxedR1CSWitness<C>,
+    u2: &R1CSInstance<C>,
+    w2: &R1CSWitness<C>,
+    rng: &mut impl RngCore,
+    challenge: impl FnOnce(&C) -> C::ScalarField,
+) -> Result<(RelaxedR1CSInstance<C>, RelaxedR1CSWitness<C>, C), FoldError> {
     let z1 = shape.z(&w1.w, &u1.x, u1.u)?;
     let z2 = shape.z(&w2.w, &u2.x, C::ScalarField::one())?;
     let t = compute_cross_term(shape, &z1, &z2);
     let r_t = C::ScalarField::rand(rng);
-    let comm_t = pp.ck.commit(&t, r_t);
+    let comm_t = ck.commit(&t, r_t);
 
-    let r = fold_challenge(&pp.poseidon, pp.digest, u1, u2, &comm_t);
+    let r = challenge(&comm_t);
 
     // E2 = 0 and r_E2 = 0 for a fresh step, so the r² terms vanish.
     let w = cfg_iter!(w1.w)
@@ -163,7 +183,8 @@ where
     fold_instance(u1, u2, comm_t, r)
 }
 
-fn fold_instance<C: CurveGroup>(
+/// `U ← U1 + r·U2` for a fresh `U2` (two scalar multiplications).
+pub fn fold_instance<C: CurveGroup>(
     u1: &RelaxedR1CSInstance<C>,
     u2: &R1CSInstance<C>,
     comm_t: &C,
@@ -191,13 +212,30 @@ pub fn nifs_prove_relaxed<C: CurveGroup>(
 where
     C::BaseField: PrimeField + Absorb,
 {
+    nifs_prove_relaxed_with(&pp.ck, shape, u1, w1, u2, w2, rng, |comm_t| {
+        fold_challenge_relaxed(&pp.poseidon, pp.digest, u1, u2, comm_t)
+    })
+}
+
+/// [`nifs_prove_relaxed`] with a caller-supplied Fiat–Shamir challenge.
+#[allow(clippy::too_many_arguments)]
+pub fn nifs_prove_relaxed_with<C: CurveGroup>(
+    ck: &CommitmentKey<C>,
+    shape: &R1CSShape<C::ScalarField>,
+    u1: &RelaxedR1CSInstance<C>,
+    w1: &RelaxedR1CSWitness<C>,
+    u2: &RelaxedR1CSInstance<C>,
+    w2: &RelaxedR1CSWitness<C>,
+    rng: &mut impl RngCore,
+    challenge: impl FnOnce(&C) -> C::ScalarField,
+) -> Result<(RelaxedR1CSInstance<C>, RelaxedR1CSWitness<C>, C), FoldError> {
     let z1 = shape.z(&w1.w, &u1.x, u1.u)?;
     let z2 = shape.z(&w2.w, &u2.x, u2.u)?;
     let t = compute_cross_term(shape, &z1, &z2);
     let r_t = C::ScalarField::rand(rng);
-    let comm_t = pp.ck.commit(&t, r_t);
+    let comm_t = ck.commit(&t, r_t);
 
-    let r = fold_challenge_relaxed(&pp.poseidon, pp.digest, u1, u2, &comm_t);
+    let r = challenge(&comm_t);
     let r2 = r * r;
     let w = cfg_iter!(w1.w)
         .zip(cfg_iter!(w2.w))
@@ -232,7 +270,8 @@ where
     fold_relaxed_instance(u1, u2, comm_t, r)
 }
 
-fn fold_relaxed_instance<C: CurveGroup>(
+/// `U ← U1 + r·U2` for a relaxed `U2`, including the `r²·comm_E2` term.
+pub fn fold_relaxed_instance<C: CurveGroup>(
     u1: &RelaxedR1CSInstance<C>,
     u2: &RelaxedR1CSInstance<C>,
     comm_t: &C,

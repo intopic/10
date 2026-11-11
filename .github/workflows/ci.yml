@@ -34,7 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
-      - run: cargo test --workspace --no-default-features --features llull-folder/cli,zeno-ivc/cli,decider-zk/cli
+      - run: cargo test --workspace --no-default-features --features llull-folder/cli,zeno-ivc/cli,decider-zk/cli,evm-verifier/cli
 
   wasm:
     name: wasm32 build
@@ -72,6 +72,22 @@ jobs:
             sdk/wasm/package.json
             sdk/wasm/README.md
             sdk/wasm/dist
+
+  contracts:
+    name: ZenoLlullVerifier.sol — EVM test + gas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release -p evm-verifier
+      - run: npm ci
+        working-directory: contracts
+      - name: Fold on-chain against the Rust prover, gas < 300k per step
+        run: node contracts/test/verifier.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
 
   kpi:
     name: KPI — fold t=100, IVC, memorie

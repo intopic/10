@@ -1,0 +1,31 @@
+[package]
+name = "evm-verifier"
+description = "Prover-side companion of contracts/ZenoLlullVerifier.sol: Keccak transcript, calldata encoding, off-chain decider"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-r1cs = { path = "../core-r1cs", default-features = false }
+llull-folder = { path = "../llull-folder", default-features = false }
+decider-zk = { path = "../decider-zk", default-features = false }
+ark-ff.workspace = true
+ark-ec.workspace = true
+ark-std.workspace = true
+ark-serialize.workspace = true
+ark-bn254.workspace = true
+sha2.workspace = true
+sha3.workspace = true
+
+[dev-dependencies]
+llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
+
+[features]
+default = ["parallel", "cli"]
+parallel = ["llull-folder/parallel", "decider-zk/parallel", "core-r1cs/parallel"]
+cli = ["llull-folder/cli", "ark-std/std"]
+
+[[bin]]
+name = "zeno-evm-fixture"
+path = "src/bin/zeno-evm-fixture.rs"
+required-features = ["cli"]
