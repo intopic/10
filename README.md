@@ -15,7 +15,7 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 | `crates/llull-folder` | Pedersen, vektori `T` i Llull-it, transkripti Poseidon, `nifs_prove` / `nifs_verify`, CLI |
 | `crates/decider-zk` | Maskimi zero-knowledge dhe prova e shkurtër `CompressedIvcProof` (sum-check + IPA), CLI |
 | `crates/evm-verifier` | Provuesi për kontratën: transkript Keccak, kodim ABI, vendimtar jashtë zinxhirit |
-| `contracts` | `ZenoLlullVerifier.sol` (palosje në zinxhir me precompile BN254) dhe testi i tij në EVM |
+| `contracts` | `ZenoLlullVerifier.sol` (palosje në zinxhir) dhe `ZenoUniversalDecider.sol` (vendimtar universal, zero setup për qark), me test në EVM |
 | `crates/zeno-license` | Çelësa licence të nënshkruar (Ed25519) dhe mjeti i shitësit |
 | `crates/cloud-prover` | Shërbimi HTTP pay-per-proof me autentikim me licencë dhe matje përdorimi; `Dockerfile` |
 | `crates/mobile-ffi` | SDK native: lidhje Swift / Kotlin / Python të gjeneruara me UniFFI |

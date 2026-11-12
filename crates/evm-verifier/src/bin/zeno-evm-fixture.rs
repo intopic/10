@@ -2,7 +2,7 @@
 //! calldata for every call and the accumulator the prover expects on-chain
 //! after each of them, plus the off-chain decider's verdict.
 //!
-//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--mode transparent|onchain]`
+//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--mode transparent|onchain|universal]`
 //!
 //! `onchain` loads the KZG reference string from a small ceremony-format
 //! `.ptau` file, uses locally generated (test-only) Groth16 decider keys and emits the `finalizeWithProof` flow.
@@ -10,7 +10,8 @@
 use ark_bn254::Fr;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
 use evm_verifier::{
-    abi, kzg::Srs, point_words, verify_final, word, DeciderKeys, EvmParams, OnChainFolder, Word,
+    abi, kzg::Srs, point_words, universal, verify_final, word, DeciderKeys, EvmParams,
+    OnChainFolder, Word,
 };
 use llull_folder::{core_r1cs::RelaxedR1CSInstance, demo_circuit::CubicChain};
 
@@ -36,6 +37,7 @@ fn main() {
     let mut session = [0u8; 32];
     let mut steps = 5usize;
     let mut onchain = false;
+    let mut universal_mode = false;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         let value = argv.next().expect("missing value");
@@ -48,29 +50,39 @@ fn main() {
                 }
             }
             "--steps" => steps = value.parse().expect("number"),
-            "--mode" => onchain = value == "onchain",
+            "--mode" => {
+                onchain = value == "onchain";
+                universal_mode = value == "universal";
+            }
             other => panic!("unknown option {other}"),
         }
     }
 
     // Fixed seed: the scenario must be reproducible across invocations.
     let mut rng = StdRng::seed_from_u64(0x5eed);
-    let rounds = 64;
+    // The universal mode commits to the matrices too; a smaller circuit
+    // keeps it within the 128 powers of the test ceremony file.
+    let rounds = if universal_mode { 8 } else { 64 };
     let z0 = Fr::from(3u64);
     let (shape, _, _) = CubicChain { z_in: z0, rounds }
         .synthesize()
         .expect("synthesis");
-    let params = if onchain {
+    // A real ceremony-format file (snarkjs, power 7, two contributions).
+    const PTAU: &[u8] = include_bytes!("../../fixtures/pot7_test.ptau");
+    let label = b"zeno-llull/evm-fixture";
+    let params = if universal_mode {
+        let len = universal::Dims::of(&shape).srs_len();
+        let srs = Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau");
+        EvmParams::setup_universal(shape, label, &srs)
+    } else if onchain {
         let len = shape
             .num_vars
             .max(shape.num_constraints)
             .next_power_of_two();
-        // A real ceremony-format file (snarkjs, power 7, two contributions).
-        const PTAU: &[u8] = include_bytes!("../../fixtures/pot7_test.ptau");
         let srs = Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau");
-        EvmParams::setup_kzg(shape, b"zeno-llull/evm-fixture", &srs)
+        EvmParams::setup_kzg(shape, label, &srs)
     } else {
-        EvmParams::setup(shape, b"zeno-llull/evm-fixture")
+        EvmParams::setup(shape, label)
     };
     let mut folder = OnChainFolder::new(&params);
 
@@ -93,6 +105,27 @@ fn main() {
     }
     let open = hex(&abi::open_session(&params.vk, &[z0]));
     let get = hex(&abi::get_accumulator(&session));
+    if universal_mode {
+        // No keys to generate: the circuit key is a public commitment.
+        let key = universal::CircuitKey::preprocess(&params);
+        let key_words = abi::universal_key(&params, &key);
+        let (mask, final_acc, proof) = folder
+            .finalize_universal(&params, &key, &mut rng)
+            .expect("universal proof");
+        let proof_words = proof.words();
+        println!(
+            "{{\"vk\":\"{}\",\"open\":\"{open}\",\"register\":\"{}\",\"steps\":[{}],\"finalizeUniversal\":{{\"calldata\":\"{}\",\"accumulator\":{},\"proofBytes\":{},\"proofWords\":{},\"keyWords\":{}}},\"getAccumulator\":\"{get}\"}}",
+            hex(&params.vk),
+            hex(&abi::register_universal_circuit(&params.vk, &key_words)),
+            step_items.join(","),
+            hex(&abi::finalize_universal(&session, &mask, &key_words, &proof_words)),
+            acc_json(&final_acc),
+            32 * proof_words.len(),
+            proof_words.len(),
+            key_words.len(),
+        );
+        return;
+    }
     if onchain {
         let keys = DeciderKeys::insecure_for_testing(&params, &mut rng).expect("decider keys");
         let key = abi::decider_key(&params, &keys.vk);

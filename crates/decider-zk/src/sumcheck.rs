@@ -7,6 +7,30 @@ use crate::fs_transcript::Transcript;
 use alloc::vec::Vec;
 use ark_ff::PrimeField;
 
+/// The Fiat–Shamir interface the sum-check needs, so the same code runs over
+/// the SHA-256 transcript of the transparent decider and the Keccak
+/// transcript an EVM contract can replay.
+pub trait FsTranscript<F> {
+    fn absorb_scalars(&mut self, label: &'static [u8], values: &[F]);
+    fn challenge_scalar(&mut self) -> F;
+}
+
+impl<F: PrimeField> FsTranscript<F> for Transcript {
+    fn absorb_scalars(&mut self, label: &'static [u8], values: &[F]) {
+        self.absorb(label, &values.to_vec());
+    }
+    fn challenge_scalar(&mut self) -> F {
+        self.challenge()
+    }
+}
+
+/// `eq(a, b) = Π (a_i·b_i + (1 − a_i)(1 − b_i))` for two points.
+pub fn eq_points<F: PrimeField>(a: &[F], b: &[F]) -> F {
+    a.iter().zip(b).fold(F::one(), |acc, (x, y)| {
+        acc * (*x * y + (F::one() - x) * (F::one() - y))
+    })
+}
+
 /// The table `eq(r, x)` for all `x ∈ {0,1}^len(r)`.
 pub fn eq_table<F: PrimeField>(r: &[F]) -> Vec<F> {
     let mut table = alloc::vec![F::one()];
@@ -67,11 +91,11 @@ pub fn interpolate<F: PrimeField>(evals: &[F], r: F) -> F {
 ///
 /// Returns the round messages and the challenge point; the tables are left
 /// fully bound (length 1).
-pub fn prove<F: PrimeField>(
+pub fn prove<F: PrimeField, T: FsTranscript<F>>(
     tables: &mut [Vec<F>],
     degree: usize,
     combine: impl Fn(&[F]) -> F,
-    transcript: &mut Transcript,
+    transcript: &mut T,
 ) -> (Vec<F>, Vec<F>) {
     let rounds = tables[0].len().trailing_zeros() as usize;
     let mut messages = Vec::with_capacity(rounds * degree);
@@ -98,8 +122,8 @@ pub fn prove<F: PrimeField>(
             .filter(|(t, _)| *t != 1)
             .map(|(_, e)| *e)
             .collect();
-        transcript.absorb(b"sumcheck-round", &round);
-        let r: F = transcript.challenge();
+        transcript.absorb_scalars(b"sumcheck-round", &round);
+        let r: F = transcript.challenge_scalar();
         for table in tables.iter_mut() {
             bind(table, r);
         }
@@ -111,12 +135,12 @@ pub fn prove<F: PrimeField>(
 
 /// Verifier side: reduces `claim` to a claim about the summand at the
 /// returned point. Returns `None` if the proof is malformed.
-pub fn verify<F: PrimeField>(
+pub fn verify<F: PrimeField, T: FsTranscript<F>>(
     mut claim: F,
     rounds: usize,
     degree: usize,
     messages: &[F],
-    transcript: &mut Transcript,
+    transcript: &mut T,
 ) -> Option<(F, Vec<F>)> {
     if messages.len() != rounds * degree {
         return None;
@@ -128,8 +152,8 @@ pub fn verify<F: PrimeField>(
         evals.push(round[0]);
         evals.push(claim - round[0]);
         evals.extend_from_slice(&round[1..]);
-        transcript.absorb(b"sumcheck-round", &round.to_vec());
-        let r: F = transcript.challenge();
+        transcript.absorb_scalars(b"sumcheck-round", round);
+        let r: F = transcript.challenge_scalar();
         claim = interpolate(&evals, r);
         point.push(r);
     }

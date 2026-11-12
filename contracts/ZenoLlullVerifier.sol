@@ -25,6 +25,15 @@ pragma solidity ^0.8.24;
 /// - `finalize` (transparent mode): the session is only closed; a succinct
 ///   transparent proof is verified off-chain against the final accumulator
 ///   (`evm-verifier::verify_final`). Such a session is never `decided`.
+interface IZenoUniversalDecider {
+    function verify(
+        bytes32 vk,
+        uint256[] calldata key,
+        uint256[] calldata acc,
+        uint256[] calldata proof
+    ) external view returns (bool);
+}
+
 contract ZenoLlullVerifier {
     /// Order of the BN254 scalar field.
     uint256 internal constant R =
@@ -70,8 +79,14 @@ contract ZenoLlullVerifier {
     uint256 public protocolFee;
     uint256 public sessionCount;
     mapping(bytes32 => Session) private sessions;
-    /// Hash of the decider key registered for each circuit `vk`.
+    /// Hash of the Groth16 decider key registered for each circuit `vk`
+    /// (development mode: these keys are circuit-specific).
     mapping(bytes32 => bytes32) public deciderKeyHash;
+    /// Hash of the universal decider key of each circuit `vk`: public
+    /// commitments to its matrices, recomputable by anyone.
+    mapping(bytes32 => bytes32) public universalKeyHash;
+    /// The universal decider verifier contract.
+    IZenoUniversalDecider public universalDecider;
 
     event SessionOpened(bytes32 indexed sessionId, address indexed prover, bytes32 vk);
     event StepFolded(bytes32 indexed sessionId, uint64 step);
@@ -272,6 +287,46 @@ contract ZenoLlullVerifier {
         s.decided = true;
         emit SessionFinalized(sessionId, s.steps, accumulatorHash(sessionId));
         emit SessionDecided(sessionId, s.steps);
+    }
+
+    /// @notice Closes the session like `finalize` and verifies on-chain, with
+    /// the universal decider, that the final accumulator is satisfiable.
+    /// No circuit-specific key or setup is involved: `key` holds the public
+    /// commitments to the circuit's matrices.
+    function finalizeUniversal(
+        bytes32 sessionId,
+        bytes calldata maskProof,
+        uint256[] calldata key,
+        uint256[] calldata proof
+    ) external {
+        Session storage s = _foldMask(sessionId, maskProof);
+        bytes32 keyHash = universalKeyHash[s.vk];
+        if (keyHash == bytes32(0) || keccak256(abi.encodePacked(key)) != keyHash) {
+            revert UnknownDeciderKey();
+        }
+        uint256 n = s.x.length;
+        uint256[] memory acc = new uint256[](5 + n);
+        (acc[0], acc[1], acc[2], acc[3], acc[4]) = (s.ex, s.ey, s.u, s.wx, s.wy);
+        for (uint256 i = 0; i < n; ++i) acc[5 + i] = s.x[i];
+        if (!universalDecider.verify(s.vk, key, acc, proof)) revert InvalidDeciderProof();
+
+        s.decided = true;
+        emit SessionFinalized(sessionId, s.steps, accumulatorHash(sessionId));
+        emit SessionDecided(sessionId, s.steps);
+    }
+
+    /// @notice Registers the universal decider key of a circuit (its hash).
+    /// The key is a deterministic function of the circuit and the reference
+    /// string, so anyone can check a registration. Registration is permanent.
+    function registerUniversalCircuit(bytes32 vk, bytes32 keyHash) external onlyOwner {
+        if (universalKeyHash[vk] != bytes32(0)) revert CircuitAlreadyRegistered();
+        if (keyHash == bytes32(0)) revert UnknownDeciderKey();
+        universalKeyHash[vk] = keyHash;
+        emit CircuitRegistered(vk, keyHash);
+    }
+
+    function setUniversalDecider(IZenoUniversalDecider decider) external onlyOwner {
+        universalDecider = decider;
     }
 
     /// @notice Registers the decider key of a circuit: the blinding generator

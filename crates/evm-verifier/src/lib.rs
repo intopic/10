@@ -21,6 +21,7 @@ extern crate alloc;
 pub mod abi;
 pub mod decider_circuit;
 pub mod kzg;
+pub mod universal;
 
 use alloc::vec::Vec;
 use ark_bn254::{Bn254, Fq, Fr, G1Projective as G1, G2Affine};
@@ -180,6 +181,16 @@ impl EvmParams {
         Self::from_key(shape, ck, Some(srs.tau_g2), label)
     }
 
+    /// Derives the parameters for the *universal* decider: like
+    /// [`Self::setup_kzg`], with a commitment key long enough to commit to
+    /// the circuit's matrices ([`universal::Dims::srs_len`]). No per-circuit
+    /// secret is involved anywhere.
+    pub fn setup_universal(shape: R1CSShape<Fr>, label: &[u8], srs: &kzg::Srs) -> Self {
+        let len = universal::Dims::of(&shape).srs_len();
+        let ck = srs.commitment_key(label, len);
+        Self::from_key(shape, ck, Some(srs.tau_g2), label)
+    }
+
     fn from_key(
         shape: R1CSShape<Fr>,
         ck: CommitmentKey<G1>,
@@ -320,6 +331,37 @@ impl OnChainFolder {
         Ok((mask, acc, snark))
     }
 
+    /// Universal mode: masks the accumulator and proves that it is
+    /// satisfiable with the universal decider — no per-circuit keys, only
+    /// the reference string and the public [`universal::CircuitKey`].
+    /// `params` must come from [`EvmParams::setup_universal`].
+    #[allow(clippy::type_complexity)]
+    pub fn finalize_universal(
+        self,
+        params: &EvmParams,
+        key: &universal::CircuitKey,
+        rng: &mut impl RngCore,
+    ) -> Result<
+        (
+            MaskProof,
+            RelaxedR1CSInstance<G1>,
+            universal::UniversalProof,
+        ),
+        DeciderError,
+    > {
+        if params.tau_g2.is_none() {
+            return Err(DeciderError::NotKzg);
+        }
+        let (mask, acc, witness) = self.mask(params, rng)?;
+        llull_folder::check_accumulator(&params.ck, &params.shape, &acc, &witness)
+            .map_err(|_| DeciderError::Unsatisfied)?;
+        let proof = universal::prove(params, key, &acc, &witness);
+        if !universal::verify(params, key, &acc, &proof) {
+            return Err(DeciderError::Unsatisfied);
+        }
+        Ok((mask, acc, proof))
+    }
+
     /// Mode B (EVM): masks the accumulator and produces the constant-size
     /// decider proof that `finalizeWithProof` verifies on-chain: two KZG
     /// openings and one Groth16 proof.
@@ -371,6 +413,17 @@ impl OnChainFolder {
         }
         Ok((mask, acc, proof))
     }
+}
+
+/// The accumulator the contract holds after executing `finalize*` with
+/// `mask`: the masking fold recomputed from public data only.
+pub fn fold_relaxed_mask(
+    params: &EvmParams,
+    acc: &RelaxedR1CSInstance<G1>,
+    mask: &MaskProof,
+) -> RelaxedR1CSInstance<G1> {
+    let r = mask_challenge(&params.vk, acc, &mask.mask, &mask.comm_t);
+    llull_folder::fold_relaxed_instance(acc, &mask.mask, &mask.comm_t, r)
 }
 
 /// Errors of the on-chain decider.

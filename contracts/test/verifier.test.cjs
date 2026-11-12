@@ -18,10 +18,13 @@ const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step
 const STEPS = 5;
 
 function compile() {
-  const source = fs.readFileSync(path.join(__dirname, "../ZenoLlullVerifier.sol"), "utf8");
+  const read = (name) => ({ content: fs.readFileSync(path.join(__dirname, "..", name), "utf8") });
   const input = {
     language: "Solidity",
-    sources: { "ZenoLlullVerifier.sol": { content: source } },
+    sources: {
+      "ZenoLlullVerifier.sol": read("ZenoLlullVerifier.sol"),
+      "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
+    },
     settings: {
       optimizer: { enabled: true, runs: 200 },
       viaIR: true,
@@ -34,7 +37,10 @@ function compile() {
   if (errors.length) throw new Error(errors.map((e) => e.formattedMessage).join("\n"));
   const warnings = (out.errors ?? []).filter((e) => e.severity === "warning");
   assert.equal(warnings.length, 0, warnings.map((e) => e.formattedMessage).join("\n"));
-  return out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier;
+  return {
+    verifier: out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
+    decider: out.contracts["ZenoUniversalDecider.sol"].ZenoUniversalDecider,
+  };
 }
 
 const word = (v) => v.toString(16).padStart(64, "0");
@@ -44,7 +50,8 @@ const intrinsicGas = (data) =>
   21000n + data.reduce((acc, b) => acc + (b === 0 ? 4n : 16n), 0n);
 
 (async () => {
-  const contract = compile();
+  const compiled = compile();
+  const contract = compiled.verifier;
   const sel = contract.evm.methodIdentifiers;
   const common = new Common({ chain: Chain.Mainnet, hardfork: Hardfork.Cancun });
   const evm = await EVM.create({ common });
@@ -205,16 +212,65 @@ const intrinsicGas = (data) =>
   await revertsWith(call(prover, fwp), "SessionClosed()");
   assert.ok(fb.finalizeWithProof.proofBytes < 4096);
 
+  // --- Universal decider: no per-circuit keys ----------------------------------
+  const deployDecider = await evm.runCall({
+    caller: owner,
+    data: hexToBytes("0x" + compiled.decider.evm.bytecode.object),
+    gasLimit: 10_000_000n,
+  });
+  assert.equal(deployDecider.execResult.exceptionError, undefined, "decider deployment failed");
+  console.log(`universal decider    : ${deployDecider.execResult.executionGasUsed} gas to deploy`);
+  const setDecider =
+    "0x" + sel["setUniversalDecider(address)"] + word(BigInt(deployDecider.createdAddress.toString()));
+  await revertsWith(call(stranger, setDecider), "NotOwner()");
+  assert.ok((await call(owner, setDecider)).ok);
+
+  const preU = fixture(["--steps", "1", "--mode", "universal"]);
+  const openedU = await call(prover, preU.open);
+  assert.ok(openedU.ok);
+  const fu = fixture(["--session", openedU.ret, "--steps", String(STEPS), "--mode", "universal"]);
+  for (const step of fu.steps) {
+    assert.ok((await call(prover, step.calldata, FEE)).ok);
+  }
+  const fin2 = fu.finalizeUniversal;
+  await revertsWith(call(prover, fin2.calldata), "UnknownDeciderKey()");
+  assert.ok((await call(owner, fu.register)).ok);
+
+  // Forgeries: flip one bit in every word of the proof and of the key.
+  const total = (fin2.calldata.length - 2) / 2;
+  const uProofStart = total - 32 * fin2.proofWords;
+  const uKeyStart = uProofStart - 32 - 32 * fin2.keyWords;
+  for (let w = 0; w < fin2.proofWords; w++) {
+    const res = await call(prover, flip(fin2.calldata, uProofStart + 32 * w + 31));
+    assert.equal(res.ok, false, `forged universal proof word ${w} was accepted`);
+  }
+  for (let w = 0; w < fin2.keyWords; w++) {
+    await revertsWith(call(prover, flip(fin2.calldata, uKeyStart + 32 * w + 31)), "UnknownDeciderKey()");
+  }
+  // A truncated proof is malformed, not accepted.
+  assert.equal((await call(prover, fin2.calldata.slice(0, -64))).ok, false);
+  assert.equal((await readAccumulator(fu.getAccumulator)).finalized, false);
+
+  const decidedU = await call(prover, fin2.calldata);
+  assert.ok(decidedU.ok, "finalizeUniversal reverted");
+  console.log(`finalizeUniversal    : ${decidedU.gas} gas (no circuit-specific setup)`);
+  console.log(`universal proof      : ${fin2.proofBytes} bytes`);
+  const finalU = await readAccumulator(fu.getAccumulator);
+  assert.deepEqual(finalU.acc, fin2.accumulator);
+  assert.equal(finalU.decided, true);
+  assert.equal(finalU.steps, STEPS);
+  await revertsWith(call(prover, fin2.calldata), "SessionClosed()");
+
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  assert.equal(await balance(to), FEE * BigInt(2 * STEPS));
+  assert.equal(await balance(to), FEE * BigInt(3 * STEPS));
   const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(owner.toString()));
   await revertsWith(call(stranger, withdraw), "NotOwner()");
   await revertsWith(call(stranger, "0x" + sel["setProtocolFee(uint256)"] + word(0n)), "NotOwner()");
   const before = await balance(owner);
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
-  assert.equal((await balance(owner)) - before, FEE * BigInt(2 * STEPS));
+  assert.equal((await balance(owner)) - before, FEE * BigInt(3 * STEPS));
   console.log("OK");
 })().catch((e) => {
   console.error(e);

@@ -176,6 +176,54 @@ pub fn finalize_with_proof(
     out
 }
 
+/// The universal decider key passed to `finalizeUniversal`: the circuit's
+/// dimensions and matrix commitments, then the blinding generator and `[τ]₂`.
+pub fn universal_key(params: &EvmParams, key: &crate::universal::CircuitKey) -> Vec<Word> {
+    let tau_g2 = params.tau_g2.expect("universal key needs KZG parameters");
+    let mut words = key.words();
+    words.extend(g1_words(&params.ck.h));
+    words.extend(g2_words(&tau_g2));
+    words
+}
+
+/// `registerUniversalCircuit(bytes32 vk, bytes32 keyHash)`.
+pub fn register_universal_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
+    let mut hasher = Keccak256::new();
+    for w in key {
+        hasher.update(w);
+    }
+    let mut out = selector("registerUniversalCircuit(bytes32,bytes32)").to_vec();
+    out.extend(vk);
+    out.extend(hasher.finalize());
+    out
+}
+
+/// `finalizeUniversal(bytes32 sessionId, bytes maskProof, uint256[] key, uint256[] proof)`.
+pub fn finalize_universal(
+    session: &Word,
+    mask: &MaskProof,
+    key: &[Word],
+    proof: &[Word],
+) -> Vec<u8> {
+    let mask = mask_bytes(mask);
+    let head = 32 * 4;
+    let mask_tail = 32 + 32 * mask.len().div_ceil(32);
+    let key_tail = 32 + 32 * key.len();
+    let mut out = selector("finalizeUniversal(bytes32,bytes,uint256[],uint256[])").to_vec();
+    out.extend(session);
+    out.extend(uint(head));
+    out.extend(uint(head + mask_tail));
+    out.extend(uint(head + mask_tail + key_tail));
+    bytes_tail(&mut out, &mask);
+    for words in [key, proof] {
+        out.extend(uint(words.len()));
+        for w in words {
+            out.extend(w);
+        }
+    }
+    out
+}
+
 /// `getAccumulator(bytes32 sessionId)`.
 pub fn get_accumulator(session: &Word) -> Vec<u8> {
     let mut out = selector("getAccumulator(bytes32)").to_vec();

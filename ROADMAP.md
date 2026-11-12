@@ -72,18 +72,21 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 - [x] `Srs::from_ptau`: ngarkon SRS nga skedarët `.ptau` të ceremonive publike (Perpetual Powers of
       Tau / Hermez) dhe verifikon strukturën (pika në kurbë, fuqi të njëpasnjëshme me çiftëzim);
       testi EVM përdor një skedar real të këtij formati
-- [ ] Vendimtar universal (pa asnjë setup për qark). Analiza e rrugëve të provuara:
-  - *Groth16 me matricat si dëshmi* (qark fiks, i lidhur me `.ptau`): matricat duhen lidhur brenda
-    qarkut me hash (e njëjta arsye si digjesti `d`). Kushton ~75 kufizime për element × 9 vektorë
-    indeksesh/vlerash × `nnz`: për një qark aplikacioni 2^16 dalin > 100 M kufizime. I papërdorshëm
-    përtej qarqeve lodër.
-  - *PlonK me snarkjs mbi `.ptau`* (setup determinist, pa ceremoni): hash-i i dëshmisë kushton
-    ~400 porta për element; për 2^16 dalin > 25 M porta. I papërdorshëm.
-  - *Spartan/SPARK me HyperKZG* (matricat të angazhuara një herë nga `.ptau`, pa sekrete): rruga e
-    saktë dhe e vetmja që shkallëzon, por është një SNARK i ri holografik (kontrolle memorieje,
-    PCS shumëlineare, verifikues Solidity). Nuk është ndërtuar.
-- [ ] Deri atëherë çelësat Groth16 janë **specifikë për qarkun** (qarku vendimtar përmban `A, B, C`).
-      `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme: vetëm për zhvillim
+- [x] **Vendimtar universal — zero setup për qark** (`evm-verifier::universal`, `ZenoUniversalDecider.sol`):
+  - matricat `A, B, C` angazhohen një herë, në mënyrë deterministe dhe publike, nga `.ptau`
+    (`CircuitKey::preprocess`: `row, col, val_A, val_B, val_C, count_row, count_col`); pa sekrete,
+    kushdo i rillogarit
+  - argument stil Spartan: sum-check i jashtëm dhe i brendshëm, pastaj vlerësimi i matricave pa i
+    lexuar ato — produkt `Σ val·e_row·e_col` me kërkime LogUp që vërtetojnë `e_row = eq(r_x, row)`
+    dhe `e_col = eq(r_y, col)`
+  - hapje shumëlineare HyperKZG mbi të njëjtat angazhime KZG të palosjes; 5 hapje, një çiftëzim
+  - transkript Keccak identik në Rust dhe Solidity; `finalizeUniversal` e shënon sesionin `decided`
+  - teste: ~60 falsifikime në Rust; në EVM çdo fjalë e provës (232) dhe e çelësit refuzohet
+  - matje: provë 7.4 KB (16 kufizime) → 14.9 KB (1024); **~1.22 M gas** në EVM për qarkun e vogël
+- [ ] Ulja e gazit të `finalizeUniversal` (bashkimi i hapjeve në një pikë, më pak `ecMul`)
+- [ ] Vendimtari universal për qarqe të mëdha: SRS më e gjatë (`.ptau` me fuqi më të lartë), matje
+- [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
+      qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
       grupuara në një kontroll)
 - [ ] Mënyra B për IVC-në rekursive off-chain: akumulatori sekondar (Grumpkin) nuk ka precompile në
@@ -137,7 +140,8 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | SDK native (Python/Swift/Kotlin, 4 fije, qark Circom) | ~93 ms / hap |
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
-| `finalizeWithProof` në EVM (një herë) | ~456k gas, provë 544 bajt |
+| `finalizeWithProof` në EVM (Groth16, vetëm zhvillim) | ~456k gas, provë 544 bajt |
+| `finalizeUniversal` në EVM (zero setup, qark 16 kufizime) | ~1.22 M gas, provë 7.4 KB |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |
