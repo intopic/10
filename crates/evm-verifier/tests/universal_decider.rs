@@ -27,9 +27,7 @@ fn setup(rounds: usize, rng: &mut StdRng) -> (EvmParams, CircuitKey) {
     .unwrap();
     let len = universal::Dims::of(&shape).srs_len();
     let srs = Srs::insecure_for_testing(len, rng);
-    let params = EvmParams::setup_universal(shape, b"universal-test", &srs);
-    let key = CircuitKey::preprocess(&params);
-    (params, key)
+    EvmParams::setup_universal(shape, b"universal-test", &srs)
 }
 
 /// Folds `steps` steps and masks the accumulator, as `finalize` does.
@@ -53,8 +51,12 @@ fn universal_decider_accepts_folded_accumulators() {
     let mut rng = StdRng::seed_from_u64(1);
     for rounds in [4usize, 16] {
         let (params, key) = setup(rounds, &mut rng);
-        // Preprocessing is deterministic: anyone recomputes the same key.
-        assert_eq!(CircuitKey::preprocess(&params).digest(), key.digest());
+        // Preprocessing is deterministic: anyone recomputes the same key,
+        // and with it the circuit's on-chain identity.
+        let again = CircuitKey::preprocess(&params.shape, &params.ck);
+        assert_eq!(again.digest(), key.digest());
+        let tau_g2 = params.tau_g2.unwrap();
+        assert_eq!(again.circuit_id(&params.ck.h, &tau_g2), params.vk);
         for steps in [1, 3] {
             let (acc, witness) = folded(&params, rounds, steps, &mut rng);
             check_accumulator(&params.ck, &params.shape, &acc, &witness).unwrap();
@@ -129,13 +131,13 @@ fn universal_decider_rejects_every_forgery() {
         reject("evals_z", &|p| p.evals_z[i] += one);
     }
     for i in 0..5 {
-        reject("opening comm", &|p| p.openings[i].comms[0] += h);
-        reject("opening y_pos", &|p| p.openings[i].y_pos[0] += one);
-        reject("opening y_neg", &|p| p.openings[i].y_neg[1] += one);
-        reject("opening y_sq", &|p| p.openings[i].y_sq[0] += one);
-        for j in 0..3 {
-            reject("opening pi", &|p| p.openings[i].pi[j] += h);
-        }
+        reject("opening comm", &|p| p.openings.comms[i][0] += h);
+        reject("opening y_pos", &|p| p.openings.y_pos[i][0] += one);
+        reject("opening y_neg", &|p| p.openings.y_neg[i][1] += one);
+        reject("opening y_sq", &|p| p.openings.y_sq[i][0] += one);
+    }
+    for j in 0..3 {
+        reject("opening pi", &|p| p.openings.pi[j] += h);
     }
     // Swapping the two lookup sums or the two table openings.
     reject("swapped sums", &|p| p.sums.swap(0, 1));

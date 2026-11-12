@@ -2,7 +2,8 @@
 //! calldata for every call and the accumulator the prover expects on-chain
 //! after each of them, plus the off-chain decider's verdict.
 //!
-//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--mode transparent|onchain|universal]`
+//! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--rounds N]
+//!        [--mode transparent|onchain|universal] [--ptau FILE]`
 //!
 //! `onchain` loads the KZG reference string from a small ceremony-format
 //! `.ptau` file, uses locally generated (test-only) Groth16 decider keys and emits the `finalizeWithProof` flow.
@@ -39,6 +40,7 @@ fn main() {
     let mut onchain = false;
     let mut universal_mode = false;
     let mut rounds_override: Option<usize> = None;
+    let mut ptau_path: Option<String> = None;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         let value = argv.next().expect("missing value");
@@ -52,6 +54,7 @@ fn main() {
             }
             "--steps" => steps = value.parse().expect("number"),
             "--rounds" => rounds_override = Some(value.parse().expect("number")),
+            "--ptau" => ptau_path = Some(value),
             "--mode" => {
                 onchain = value == "onchain";
                 universal_mode = value == "universal";
@@ -72,16 +75,23 @@ fn main() {
     // A real ceremony-format file (snarkjs, power 7, two contributions).
     const PTAU: &[u8] = include_bytes!("../../fixtures/pot7_test.ptau");
     let label = b"zeno-llull/evm-fixture";
+    let mut circuit_key = None;
     let params = if universal_mode {
         let len = universal::Dims::of(&shape).srs_len();
         // The test ceremony file has 128 powers; larger circuits (gas
         // scaling measurements only) fall back to a locally sampled string.
-        let srs = if len <= 128 {
+        let srs = if let Some(path) = &ptau_path {
+            // A public ceremony file, e.g. Perpetual Powers of Tau.
+            let bytes = std::fs::read(path).expect("readable .ptau file");
+            Srs::from_ptau(&bytes, len, &mut rng).expect("valid .ptau")
+        } else if len <= 128 {
             Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau")
         } else {
             Srs::insecure_for_testing(len, &mut rng)
         };
-        EvmParams::setup_universal(shape, label, &srs)
+        let (params, key) = EvmParams::setup_universal(shape, label, &srs);
+        circuit_key = Some(key);
+        params
     } else if onchain {
         let len = shape
             .num_vars
@@ -115,16 +125,16 @@ fn main() {
     let get = hex(&abi::get_accumulator(&session));
     if universal_mode {
         // No keys to generate: the circuit key is a public commitment.
-        let key = universal::CircuitKey::preprocess(&params);
+        let key = circuit_key.expect("universal mode");
         let key_words = abi::universal_key(&params, &key);
         let (mask, final_acc, proof) = folder
             .finalize_universal(&params, &key, &mut rng)
             .expect("universal proof");
         let proof_words = proof.words();
         println!(
-            "{{\"vk\":\"{}\",\"open\":\"{open}\",\"register\":\"{}\",\"steps\":[{}],\"finalizeUniversal\":{{\"calldata\":\"{}\",\"accumulator\":{},\"proofBytes\":{},\"proofWords\":{},\"keyWords\":{}}},\"getAccumulator\":\"{get}\"}}",
+            "{{\"vk\":\"{}\",\"open\":\"{open}\",\"announce\":\"{}\",\"steps\":[{}],\"finalizeUniversal\":{{\"calldata\":\"{}\",\"accumulator\":{},\"proofBytes\":{},\"proofWords\":{},\"keyWords\":{}}},\"getAccumulator\":\"{get}\"}}",
             hex(&params.vk),
-            hex(&abi::register_universal_circuit(&params.vk, &key_words)),
+            hex(&abi::announce_circuit(&key_words)),
             step_items.join(","),
             hex(&abi::finalize_universal(&session, &mask, &key_words, &proof_words)),
             acc_json(&final_acc),

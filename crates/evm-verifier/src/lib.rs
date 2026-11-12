@@ -181,14 +181,27 @@ impl EvmParams {
         Self::from_key(shape, ck, Some(srs.tau_g2), label)
     }
 
-    /// Derives the parameters for the *universal* decider: like
-    /// [`Self::setup_kzg`], with a commitment key long enough to commit to
-    /// the circuit's matrices ([`universal::Dims::srs_len`]). No per-circuit
-    /// secret is involved anywhere.
-    pub fn setup_universal(shape: R1CSShape<Fr>, label: &[u8], srs: &kzg::Srs) -> Self {
+    /// Derives the parameters for the *universal* decider and commits to
+    /// the circuit. The commitment key is long enough for the circuit's
+    /// matrices ([`universal::Dims::srs_len`]) and `vk` is the circuit's
+    /// on-chain identity [`universal::CircuitKey::circuit_id`]. No
+    /// per-circuit secret is involved anywhere.
+    pub fn setup_universal(
+        shape: R1CSShape<Fr>,
+        label: &[u8],
+        srs: &kzg::Srs,
+    ) -> (Self, universal::CircuitKey) {
         let len = universal::Dims::of(&shape).srs_len();
         let ck = srs.commitment_key(label, len);
-        Self::from_key(shape, ck, Some(srs.tau_g2), label)
+        let key = universal::CircuitKey::preprocess(&shape, &ck);
+        let vk = key.circuit_id(&ck.h, &srs.tau_g2);
+        let params = Self {
+            shape,
+            ck,
+            vk,
+            tau_g2: Some(srs.tau_g2),
+        };
+        (params, key)
     }
 
     fn from_key(

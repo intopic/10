@@ -48,13 +48,11 @@ contract ZenoUniversalDecider {
         // Challenges shared by the lookup sum-checks.
         uint256 beta;
         uint256 gamma;
-        // Accumulated pairing equation e(L, G2) = e(Rt, [τ]₂).
+        // The pairing equation e(L, G2) = e(Rt, [τ]₂) of the joint opening.
         uint256 lx;
         uint256 ly;
         uint256 rx;
         uint256 ry;
-        // Scalar of the generator term −(Σ …)·G, applied once at the end.
-        uint256 gAcc;
     }
 
     /// @notice Verifies a universal decider proof; reverts if it is invalid.
@@ -183,34 +181,30 @@ contract ZenoUniversalDecider {
         (uint256[] memory rj, uint256[] memory evalsM) = _tableCheck(s, logM, sums[0], rx, 4);
         (uint256[] memory rz, uint256[] memory evalsZ) = _tableCheck(s, logN + 1, sums[1], ry, 5);
 
-        // ---- 6. Openings, sharing one pairing check ---------------------------
+        // ---- 6. One joint opening of all five claims --------------------------
         {
+            Claim[] memory c = new Claim[](5);
             // E at r_x and W at r_y', after removing the blinding r·H.
-            uint256[] memory c = new uint256[](2);
-            (c[0], c[1]) = _addMul(acc[0], acc[1], key[17], _neg(key[18]), rE);
-            _open(s, c, rx, _slice(claims, 3, 1));
-            (c[0], c[1]) = _addMul(acc[3], acc[4], key[17], _neg(key[18]), rW);
-            _open(s, c, tail, _slice(vmw, 1, 1));
-        }
-        {
+            c[0].comms = new uint256[](2);
+            (c[0].comms[0], c[0].comms[1]) = _addMul(acc[0], acc[1], key[17], _neg(key[18]), rE);
+            (c[0].point, c[0].values) = (rx, _slice(claims, 3, 1));
+            c[1].comms = new uint256[](2);
+            (c[1].comms[0], c[1].comms[1]) = _addMul(acc[3], acc[4], key[17], _neg(key[18]), rW);
+            (c[1].point, c[1].values) = (tail, _slice(vmw, 1, 1));
             // val_A, val_B, val_C, row, col, e_row, e_col, h1_row, h1_col at r_k.
-            uint256[] memory c = new uint256[](18);
-            for (uint256 i = 0; i < 6; ++i) c[i] = key[7 + i];
-            for (uint256 i = 0; i < 4; ++i) c[6 + i] = key[3 + i];
-            for (uint256 i = 0; i < 8; ++i) c[10 + i] = comms[i];
-            _open(s, c, rk, evalsK);
-        }
-        {
-            uint256[] memory c = new uint256[](4);
-            (c[0], c[1], c[2], c[3]) = (comms[8], comms[9], key[13], key[14]);
-            _open(s, c, rj, evalsM);
-            (c[0], c[1], c[2], c[3]) = (comms[10], comms[11], key[15], key[16]);
-            _open(s, c, rz, evalsZ);
+            c[2].comms = new uint256[](18);
+            for (uint256 i = 0; i < 6; ++i) c[2].comms[i] = key[7 + i];
+            for (uint256 i = 0; i < 4; ++i) c[2].comms[6 + i] = key[3 + i];
+            for (uint256 i = 0; i < 8; ++i) c[2].comms[10 + i] = comms[i];
+            (c[2].point, c[2].values) = (rk, evalsK);
+            // h2_row, count_row at r_j; h2_col, count_col at r_z.
+            c[3].comms = _quad(comms[8], comms[9], key[13], key[14]);
+            (c[3].point, c[3].values) = (rj, evalsM);
+            c[4].comms = _quad(comms[10], comms[11], key[15], key[16]);
+            (c[4].point, c[4].values) = (rz, evalsZ);
+            _openAll(s, c);
         }
         if (s.pos != s.proof.length) revert MalformedInput();
-
-        // The generator terms of all openings: L ← L − gAcc·G.
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, 1, Q - 2, s.gAcc);
         // e(L, G₂) · e(−Rt, [τ]₂) = 1
         uint256[12] memory input = [
             s.lx, s.ly, G2_X_IM, G2_X_RE, G2_Y_IM, G2_Y_RE,
@@ -306,60 +300,129 @@ contract ZenoUniversalDecider {
         return (claim, point);
     }
 
-    /// @dev HyperKZG: verifies the evaluations `values` at `point` of the
-    /// polynomials committed in `comms` (pairs of words), up to a pairing
-    /// equation `e(L, G₂) = e(Rt, [τ]₂)`. The equation is added, with a fresh
-    /// random weight, to the one accumulated in `s`, so that all openings of
-    /// a proof are settled by a single pairing check. The weight is folded
-    /// into the scalars, which costs no extra scalar multiplication.
-    function _open(
-        State memory s,
-        uint256[] memory comms,
-        uint256[] memory point,
-        uint256[] memory values
-    ) private view {
-        uint256 ell = point.length;
-        _absorb(s, point);
-        _absorb(s, values);
-        uint256 q = _challenge(s);
-        // Random linear combination of the claimed values.
-        uint256 value = values[0];
-        {
-            uint256 qi = q;
-            for (uint256 i = 1; i < values.length; ++i) {
-                value = addmod(value, mulmod(qi, values[i], R), R);
-                qi = mulmod(qi, q, R);
-            }
-        }
+    /// One evaluation claim of the joint opening and its part of the proof.
+    struct Claim {
+        uint256[] comms; // commitments, as pairs of words
+        uint256[] point;
+        uint256[] values;
+        uint256 q; // challenge combining the claim's polynomials
+        uint256 value; // Σ qⁱ·valuesᵢ
+        uint256[] folded; // commitments to the folded polynomials
+        uint256[] yPos;
+        uint256[] yNeg;
+        uint256[] ySq;
+    }
 
-        uint256[] memory folded = _take(s, 2 * (ell - 1));
-        _absorb(s, folded);
-        uint256 r = _challenge(s);
-        if (r == 0) revert InvalidProof(6);
-        uint256[] memory yPos = _take(s, ell);
-        uint256[] memory yNeg = _take(s, ell);
-        uint256[] memory ySq = _take(s, ell - 1);
-        _absorb(s, yPos);
-        _absorb(s, yNeg);
-        _absorb(s, ySq);
+    /// Challenges and running sums of the joint opening.
+    struct Batch {
+        uint256 r;
+        uint256 dBase;
+        uint256 d;
+        uint256 g;
+        uint256 g2;
+        uint256 bPos;
+        uint256 bNeg;
+        uint256 bSq;
+    }
 
-        _foldingCheck(point, yPos, yNeg, ySq, value, r);
+    function _quad(uint256 a, uint256 b, uint256 c, uint256 d)
+        private
+        pure
+        returns (uint256[] memory out)
+    {
+        out = new uint256[](4);
+        (out[0], out[1], out[2], out[3]) = (a, b, c, d);
+    }
 
-        // Batched KZG openings at r, −r and r²:
-        //   L = (1+g)·C + (1+g+g²)·T − (b⁺ + g·b⁻ + g²·b^sq)·G + r·π₀ − g·r·π₁ + g²·r²·π₂
-        //   Rt = π₀ + g·π₁ + g²·π₂
-        // with C = Σ qⁱ·Cᵢ and T = Σ_{i≥1} dⁱ·Pᵢ, everything scaled by w.
-        uint256[5] memory ch; // d, g, w, q, r
-        ch[0] = _challenge(s);
+    /// @dev Joint HyperKZG opening: verifies, for every claim, the claimed
+    /// evaluations of its committed polynomials at its point. All folded
+    /// polynomials of all claims are opened at the same three points
+    /// `r, −r, r²`, so the batch needs three KZG proofs in total. The
+    /// resulting pairing equation `e(L, G₂) = e(Rt, [τ]₂)` is left in `s`.
+    function _openAll(State memory s, Claim[] memory c) private view {
+        for (uint256 j = 0; j < c.length; ++j) _claimHead(s, c[j]);
+
+        Batch memory b;
+        b.r = _challenge(s);
+        if (b.r == 0) revert InvalidProof(6);
+        for (uint256 j = 0; j < c.length; ++j) _claimEvals(s, c[j], b.r);
+
+        b.dBase = _challenge(s);
+        b.d = 1;
         uint256[] memory pi = _take(s, 6);
         _absorb(s, pi);
-        ch[1] = _challenge(s);
-        ch[2] = _challenge(s);
-        ch[3] = q;
-        ch[4] = r;
-        _openCommitments(s, comms, values.length, ch);
-        _openFolded(s, folded, yPos, yNeg, ySq, ch);
-        _openProofs(s, pi, ch);
+        b.g = _challenge(s);
+        b.g2 = mulmod(b.g, b.g, R);
+        for (uint256 j = 0; j < c.length; ++j) _accumulate(s, b, c[j]);
+
+        // L = … − (b⁺ + g·b⁻ + g²·b^sq)·G + r·π₀ − g·r·π₁ + g²·r²·π₂,  Rt = π₀ + g·π₁ + g²·π₂
+        (s.lx, s.ly) = _addMul(
+            s.lx,
+            s.ly,
+            1,
+            Q - 2,
+            addmod(b.bPos, addmod(mulmod(b.g, b.bNeg, R), mulmod(b.g2, b.bSq, R), R), R)
+        );
+        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[0], pi[1], b.r);
+        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[2], pi[3], R - mulmod(b.g, b.r, R));
+        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[4], pi[5], mulmod(b.g2, mulmod(b.r, b.r, R), R));
+        (s.rx, s.ry) = _addMul(pi[0], pi[1], pi[2], pi[3], b.g);
+        (s.rx, s.ry) = _addMul(s.rx, s.ry, pi[4], pi[5], b.g2);
+    }
+
+    /// @dev Absorbs a claim, combines its values with powers of `q` and
+    /// reads the commitments to its folded polynomials.
+    function _claimHead(State memory s, Claim memory c) private pure {
+        _absorb(s, c.point);
+        _absorb(s, c.values);
+        c.q = _challenge(s);
+        uint256 value = c.values[0];
+        uint256 qi = c.q;
+        for (uint256 i = 1; i < c.values.length; ++i) {
+            value = addmod(value, mulmod(qi, c.values[i], R), R);
+            qi = mulmod(qi, c.q, R);
+        }
+        c.value = value;
+        c.folded = _take(s, 2 * (c.point.length - 1));
+        _absorb(s, c.folded);
+    }
+
+    /// @dev Reads and absorbs a claim's evaluations at `r, −r, r²` and
+    /// checks that they fold down to the claimed value.
+    function _claimEvals(State memory s, Claim memory c, uint256 r) private pure {
+        uint256 ell = c.point.length;
+        c.yPos = _take(s, ell);
+        c.yNeg = _take(s, ell);
+        c.ySq = _take(s, ell - 1);
+        _absorb(s, c.yPos);
+        _absorb(s, c.yNeg);
+        _absorb(s, c.ySq);
+        _foldingCheck(c.point, c.yPos, c.yNeg, c.ySq, c.value, r);
+    }
+
+    /// @dev Adds one claim to the batch: its combined commitment enters the
+    /// openings at `r` and `−r` (weight `1+g`), its folded polynomials all
+    /// three (weight `1+g+g²`); every polynomial gets the next power of `d`.
+    function _accumulate(State memory s, Batch memory b, Claim memory c) private view {
+        {
+            uint256 coeff = mulmod(b.d, addmod(1, b.g, R), R);
+            for (uint256 i = 0; 2 * i < c.comms.length; ++i) {
+                (s.lx, s.ly) = _addMul(s.lx, s.ly, c.comms[2 * i], c.comms[2 * i + 1], coeff);
+                coeff = mulmod(coeff, c.q, R);
+            }
+        }
+        uint256 weight = addmod(addmod(1, b.g, R), b.g2, R);
+        for (uint256 i = 0; i < c.yPos.length; ++i) {
+            if (i > 0) {
+                (s.lx, s.ly) = _addMul(
+                    s.lx, s.ly, c.folded[2 * (i - 1)], c.folded[2 * i - 1], mulmod(weight, b.d, R)
+                );
+                b.bSq = addmod(b.bSq, mulmod(b.d, c.ySq[i - 1], R), R);
+            }
+            b.bPos = addmod(b.bPos, mulmod(b.d, c.yPos[i], R), R);
+            b.bNeg = addmod(b.bNeg, mulmod(b.d, c.yNeg[i], R), R);
+            b.d = mulmod(b.d, b.dBase, R);
+        }
     }
 
     /// @dev Folding consistency of HyperKZG:
@@ -383,59 +446,6 @@ contract ZenoUniversalDecider {
             );
             if (lhs != rhs) revert InvalidProof(6);
         }
-    }
-
-    /// @dev `L += w·(1+g)·Σ qⁱ·Cᵢ`.
-    function _openCommitments(State memory s, uint256[] memory comms, uint256 n, uint256[5] memory ch)
-        private
-        view
-    {
-        uint256 coeff = mulmod(ch[2], addmod(1, ch[1], R), R);
-        for (uint256 i = 0; i < n; ++i) {
-            (s.lx, s.ly) = _addMul(s.lx, s.ly, comms[2 * i], comms[2 * i + 1], coeff);
-            coeff = mulmod(coeff, ch[3], R);
-        }
-    }
-
-    /// @dev `L += w·(1+g+g²)·Σ_{i≥1} dⁱ·Pᵢ` and the generator scalar
-    /// `gAcc += w·(b⁺ + g·b⁻ + g²·b^sq)`.
-    function _openFolded(
-        State memory s,
-        uint256[] memory folded,
-        uint256[] memory yPos,
-        uint256[] memory yNeg,
-        uint256[] memory ySq,
-        uint256[5] memory ch
-    ) private view {
-        uint256 g2 = mulmod(ch[1], ch[1], R);
-        uint256 coeff = mulmod(ch[2], addmod(addmod(1, ch[1], R), g2, R), R);
-        uint256[3] memory b = [yPos[0], yNeg[0], 0];
-        uint256 di = ch[0];
-        for (uint256 i = 1; i < yPos.length; ++i) {
-            (s.lx, s.ly) = _addMul(
-                s.lx, s.ly, folded[2 * (i - 1)], folded[2 * i - 1], mulmod(coeff, di, R)
-            );
-            b[0] = addmod(b[0], mulmod(di, yPos[i], R), R);
-            b[1] = addmod(b[1], mulmod(di, yNeg[i], R), R);
-            b[2] = addmod(b[2], mulmod(di, ySq[i - 1], R), R);
-            di = mulmod(di, ch[0], R);
-        }
-        uint256 total = addmod(b[0], addmod(mulmod(ch[1], b[1], R), mulmod(g2, b[2], R), R), R);
-        s.gAcc = addmod(s.gAcc, mulmod(ch[2], total, R), R);
-    }
-
-    /// @dev `L += w·(r·π₀ − g·r·π₁ + g²·r²·π₂)`, `Rt += w·(π₀ + g·π₁ + g²·π₂)`.
-    function _openProofs(State memory s, uint256[] memory pi, uint256[5] memory ch) private view {
-        uint256 r = ch[4];
-        uint256 w = ch[2];
-        uint256 wg = mulmod(w, ch[1], R);
-        uint256 wg2 = mulmod(wg, ch[1], R);
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[0], pi[1], mulmod(w, r, R));
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[2], pi[3], R - mulmod(wg, r, R));
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[4], pi[5], mulmod(wg2, mulmod(r, r, R), R));
-        (s.rx, s.ry) = _addMul(s.rx, s.ry, pi[0], pi[1], w);
-        (s.rx, s.ry) = _addMul(s.rx, s.ry, pi[2], pi[3], wg);
-        (s.rx, s.ry) = _addMul(s.rx, s.ry, pi[4], pi[5], wg2);
     }
 
     // ------------------------------------------------------------------

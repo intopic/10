@@ -82,9 +82,6 @@ contract ZenoLlullVerifier {
     /// Hash of the Groth16 decider key registered for each circuit `vk`
     /// (development mode: these keys are circuit-specific).
     mapping(bytes32 => bytes32) public deciderKeyHash;
-    /// Hash of the universal decider key of each circuit `vk`: public
-    /// commitments to its matrices, recomputable by anyone.
-    mapping(bytes32 => bytes32) public universalKeyHash;
     /// The universal decider verifier contract.
     IZenoUniversalDecider public universalDecider;
 
@@ -93,6 +90,7 @@ contract ZenoLlullVerifier {
     event SessionFinalized(bytes32 indexed sessionId, uint64 steps, bytes32 accumulatorHash);
     event SessionDecided(bytes32 indexed sessionId, uint64 steps);
     event CircuitRegistered(bytes32 indexed vk, bytes32 keyHash);
+    event CircuitAnnounced(bytes32 indexed circuitId, address indexed by, uint256[] key);
     event ProtocolFeeChanged(uint256 fee);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -292,7 +290,8 @@ contract ZenoLlullVerifier {
     /// @notice Closes the session like `finalize` and verifies on-chain, with
     /// the universal decider, that the final accumulator is satisfiable.
     /// No circuit-specific key or setup is involved: `key` holds the public
-    /// commitments to the circuit's matrices.
+    /// commitments to the circuit's matrices, and the session must have been
+    /// opened with `vk = keccak256(key)`.
     function finalizeUniversal(
         bytes32 sessionId,
         bytes calldata maskProof,
@@ -300,10 +299,9 @@ contract ZenoLlullVerifier {
         uint256[] calldata proof
     ) external {
         Session storage s = _foldMask(sessionId, maskProof);
-        bytes32 keyHash = universalKeyHash[s.vk];
-        if (keyHash == bytes32(0) || keccak256(abi.encodePacked(key)) != keyHash) {
-            revert UnknownDeciderKey();
-        }
+        // The session's `vk` is the hash of the circuit key it was opened
+        // for: only that key can decide it. No registry, no administrator.
+        if (keccak256(abi.encodePacked(key)) != s.vk) revert UnknownDeciderKey();
         uint256 n = s.x.length;
         uint256[] memory acc = new uint256[](5 + n);
         (acc[0], acc[1], acc[2], acc[3], acc[4]) = (s.ex, s.ey, s.u, s.wx, s.wy);
@@ -315,27 +313,29 @@ contract ZenoLlullVerifier {
         emit SessionDecided(sessionId, s.steps);
     }
 
-    /// @notice Registers the universal decider key of a circuit (its hash).
-    /// The key is a deterministic function of the circuit and the reference
-    /// string, so anyone can check a registration. Registration is permanent.
-    function registerUniversalCircuit(bytes32 vk, bytes32 keyHash) external onlyOwner {
-        if (universalKeyHash[vk] != bytes32(0)) revert CircuitAlreadyRegistered();
-        if (keyHash == bytes32(0)) revert UnknownDeciderKey();
-        universalKeyHash[vk] = keyHash;
-        emit CircuitRegistered(vk, keyHash);
+    /// @notice Publishes a circuit key so that others can find and audit it.
+    /// Permissionless and purely informational: a key is a deterministic,
+    /// public function of the circuit and the reference string, and a
+    /// session is bound to its key by `vk = keccak256(key)` when it is
+    /// opened, so nothing depends on this call.
+    function announceCircuit(uint256[] calldata key) external returns (bytes32 circuitId) {
+        circuitId = keccak256(abi.encodePacked(key));
+        emit CircuitAnnounced(circuitId, msg.sender, key);
     }
 
     function setUniversalDecider(IZenoUniversalDecider decider) external onlyOwner {
         universalDecider = decider;
     }
 
-    /// @notice Registers the decider key of a circuit: the blinding generator
+    /// @notice Development mode only (Groth16 decider, whose keys are
+    /// circuit-specific and come from a setup the owner vouches for).
+    /// Registers the decider key of a circuit: the blinding generator
     /// `H`, `[τ]₂` of the KZG reference string and the Groth16 verifying key
     /// of the circuit's decider. Only its hash is stored; the key itself is
     /// passed with `finalizeWithProof`. Registration is permanent.
     /// @dev The owner vouches that `keyHash` belongs to `vk`; sessions of a
     /// circuit are only as sound as its registered key.
-    function registerCircuit(bytes32 vk, bytes32 keyHash) external onlyOwner {
+    function registerDevDeciderKey(bytes32 vk, bytes32 keyHash) external onlyOwner {
         if (deciderKeyHash[vk] != bytes32(0)) revert CircuitAlreadyRegistered();
         if (keyHash == bytes32(0)) revert UnknownDeciderKey();
         deciderKeyHash[vk] = keyHash;

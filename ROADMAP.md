@@ -86,15 +86,20 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 
     | Kufizime të qarkut | Gaz | Prova |
     |---|---|---|
-    | 16 | ~0.995 M | 7.4 KB |
-    | 256 | ~1.34 M | 12.4 KB |
-    | 4096 | ~1.69 M | 17.4 KB |
+    | 16 | ~0.82 M | 6.7 KB |
+    | 256 | ~1.18 M | 11.6 KB |
+    | 4096 | ~1.53 M | 16.6 KB |
+    | 65 536 (mbi `.ptau` publike PPoT, 2^18 fuqi) | ~1.89 M | 21.6 KB |
 
-    Rritja është logaritmike: rreth 87k gas dhe 1.25 KB për çdo dyfishim të qarkut
-  - optimizimi i parë (−18%): transkript dhe kopjime në assembly (`mcopy`), peshat e çiftëzimit të
-    futura në skalarë, një term i vetëm për gjeneratorin
-- [ ] Ulje e mëtejshme e gazit: bashkimi i pesë hapjeve në më pak pika vlerësimi
-- [ ] Qarqet > 4096 kufizime kërkojnë `.ptau` me fuqi më të lartë (matjet mbi 128 fuqi përdorin SRS testimi)
+    Rritja është logaritmike: rreth 89k gas dhe 1.25 KB për çdo dyfishim të qarkut. Provuesi për
+    2^16 kufizime: ~10 s gjithsej (ngarkim + validim i `.ptau`, parapërpunim, provë)
+  - optimizime: transkript dhe kopjime në assembly (`mcopy`); **hapje e bashkuar** — të pesë
+    pretendimet hapen në të njëjtat tre pika `r, −r, r²`, pra 3 prova KZG gjithsej në vend të 15
+  - **identitet pa leje i qarkut**: sesioni hapet me `vk = keccak256(çelësi i qarkut)` dhe vetëm ai
+    çelës mund ta vendosë; nuk ka regjistër, pronar apo mundësi "zënieje". `announceCircuit` është
+    vetëm publikim informativ. Kushdo e rillogarit identitetin nga qarku dhe `.ptau`
+  - CI shkarkon `.ptau` publike (me cache dhe kontroll SHA-256) dhe mat 2^16 në çdo ekzekutim
+- [ ] Ulje e mëtejshme e gazit: reduktimi i pesë pretendimeve në më pak pika shumëlineare
 - [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
@@ -151,7 +156,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
 | `finalizeWithProof` në EVM (Groth16, vetëm zhvillim) | ~456k gas, provë 544 bajt |
-| `finalizeUniversal` në EVM (zero setup) | ~1.0 M gas / 7.4 KB (16 kufizime) → ~1.69 M / 17.4 KB (4096) |
+| `finalizeUniversal` në EVM (zero setup) | ~0.82 M gas / 6.7 KB (16 kufizime) → ~1.89 M / 21.6 KB (65 536) |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |

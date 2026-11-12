@@ -101,7 +101,20 @@ jobs:
       - run: cargo build --release -p evm-verifier
       - run: npm ci
         working-directory: contracts
-      - name: Fold on-chain against the Rust prover, gas < 300k per step
+      - name: Cache the public Powers-of-Tau file (PSE PPoT, 2^18 powers)
+        id: ptau
+        uses: actions/cache@v4
+        with:
+          path: ppot_0080_18.ptau
+          key: ppot_0080_18-9693220206afab74
+      - name: Download the public Powers-of-Tau file
+        if: steps.ptau.outputs.cache-hit != 'true'
+        run: curl -sSf --retry 3 -o ppot_0080_18.ptau https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_18.ptau
+      - name: Check the file's SHA-256
+        run: echo "9693220206afab749e3d88d4ab5fdf5d36120ea102e7e587ccea0e7a5208e711  ppot_0080_18.ptau" | sha256sum -c -
+      - name: Fold on-chain against the Rust prover; universal decider up to 2^16 constraints
+        env:
+          ZENO_PTAU: ${{ github.workspace }}/ppot_0080_18.ptau
         run: node contracts/test/verifier.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
 
   cloud-prover:

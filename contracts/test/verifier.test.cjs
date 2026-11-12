@@ -44,7 +44,8 @@ function compile() {
 }
 
 const word = (v) => v.toString(16).padStart(64, "0");
-const fixture = (args) => JSON.parse(execFileSync(FIXTURE_BIN, args, { encoding: "utf8" }));
+const fixture = (args) =>
+  JSON.parse(execFileSync(FIXTURE_BIN, args, { encoding: "utf8", maxBuffer: 1 << 28 }));
 // Gas a transaction pays on top of execution: base cost plus calldata.
 const intrinsicGas = (data) =>
   21000n + data.reduce((acc, b) => acc + (b === 0 ? 4n : 16n), 0n);
@@ -212,6 +213,7 @@ const intrinsicGas = (data) =>
   await revertsWith(call(prover, fwp), "SessionClosed()");
   assert.ok(fb.finalizeWithProof.proofBytes < 4096);
 
+  let extraStepsEarly = 0;
   // --- Universal decider: no per-circuit keys ----------------------------------
   const deployDecider = await evm.runCall({
     caller: owner,
@@ -233,8 +235,10 @@ const intrinsicGas = (data) =>
     assert.ok((await call(prover, step.calldata, FEE)).ok);
   }
   const fin2 = fu.finalizeUniversal;
-  await revertsWith(call(prover, fin2.calldata), "UnknownDeciderKey()");
-  assert.ok((await call(owner, fu.register)).ok);
+  // Anyone may publish a circuit key; nothing depends on it.
+  const announced = await call(stranger, fu.announce);
+  assert.ok(announced.ok);
+  assert.equal(announced.ret, fu.vk, "circuit id is the hash of the key");
 
   // Forgeries: flip one bit in every word of the proof and of the key.
   const total = (fin2.calldata.length - 2) / 2;
@@ -261,21 +265,38 @@ const intrinsicGas = (data) =>
   assert.equal(finalU.steps, STEPS);
   await revertsWith(call(prover, fin2.calldata), "SessionClosed()");
 
+  // A session opened for another circuit cannot be decided with this key:
+  // the key of the 128-round circuit against a session of the 8-round one.
+  {
+    const other = fixture(["--steps", "1", "--mode", "universal", "--rounds", "128"]);
+    const openedX = await call(prover, preU.open);
+    const fxX = fixture(["--session", openedX.ret, "--steps", "1", "--mode", "universal"]);
+    assert.ok((await call(prover, fxX.steps[0].calldata, FEE)).ok);
+    const otherForX = fixture(["--session", openedX.ret, "--steps", "1", "--mode", "universal", "--rounds", "128"]);
+    assert.notEqual(other.vk, fxX.vk);
+    await revertsWith(call(prover, otherForX.finalizeUniversal.calldata), "UnknownDeciderKey()");
+    assert.ok((await call(prover, fxX.finalizeUniversal.calldata)).ok);
+    extraStepsEarly += 1;
+  }
+
   // --- Universal decider: cost as the circuit grows ----------------------------
-  let extraSteps = 0;
-  for (const rounds of [128, 2048]) {
-    const args = ["--steps", "1", "--mode", "universal", "--rounds", String(rounds)];
+  let extraSteps = extraStepsEarly;
+  // With ZENO_PTAU (a public Powers-of-Tau file with at least 2^18 powers)
+  // the 2^16-constraint circuit is measured on the real ceremony string.
+  const sizes = [[128, []], [2048, []]];
+  if (process.env.ZENO_PTAU) sizes.push([32768, ["--ptau", process.env.ZENO_PTAU]]);
+  for (const [rounds, extra] of sizes) {
+    const args = ["--steps", "1", "--mode", "universal", "--rounds", String(rounds), ...extra];
     const pre = fixture(args);
     const opened = await call(prover, pre.open);
     assert.ok(opened.ok);
     const fx2 = fixture(["--session", opened.ret, ...args]);
     assert.ok((await call(prover, fx2.steps[0].calldata, FEE)).ok);
     extraSteps += 1;
-    assert.ok((await call(owner, fx2.register)).ok);
     const res = await call(prover, fx2.finalizeUniversal.calldata);
     assert.ok(res.ok, `finalizeUniversal reverted for ${2 * rounds} constraints`);
     console.log(
-      `finalizeUniversal    : ${res.gas} gas, proof ${fx2.finalizeUniversal.proofBytes} bytes (${2 * rounds} constraints)`
+      `finalizeUniversal    : ${res.gas} gas, proof ${fx2.finalizeUniversal.proofBytes} bytes (${2 * rounds} constraints${extra.length ? ", public .ptau" : ""})`
     );
     assert.equal((await readAccumulator(fx2.getAccumulator)).decided, true);
   }

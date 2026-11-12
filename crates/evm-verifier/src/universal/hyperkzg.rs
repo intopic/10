@@ -25,18 +25,27 @@ use ark_ec::PrimeGroup;
 use ark_ff::{Field, One, Zero};
 use llull_folder::CommitmentKey;
 
+/// A joint opening proof for several evaluation claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HyperKzgProof {
-    /// Commitments to `P_1, …, P_{ℓ−1}`.
-    pub comms: Vec<G1>,
-    /// `P_i(r)` for `i = 0..ℓ`.
-    pub y_pos: Vec<Fr>,
-    /// `P_i(−r)` for `i = 0..ℓ`.
-    pub y_neg: Vec<Fr>,
-    /// `P_i(r²)` for `i = 1..ℓ`.
-    pub y_sq: Vec<Fr>,
-    /// KZG proofs at `r`, `−r`, `r²`.
+    /// Per claim: commitments to `P_1, …, P_{ℓ−1}`.
+    pub comms: Vec<Vec<G1>>,
+    /// Per claim: `P_i(r)` for `i = 0..ℓ`.
+    pub y_pos: Vec<Vec<Fr>>,
+    /// Per claim: `P_i(−r)` for `i = 0..ℓ`.
+    pub y_neg: Vec<Vec<Fr>>,
+    /// Per claim: `P_i(r²)` for `i = 1..ℓ`.
+    pub y_sq: Vec<Vec<Fr>>,
+    /// KZG proofs at `r`, `−r`, `r²`, shared by all claims.
     pub pi: [G1; 3],
+}
+
+/// One evaluation claim on the prover side: polynomials (as evaluation
+/// tables of length `2^len(point)`) with their values at `point`.
+pub struct Claim<'a> {
+    pub polys: &'a [&'a [Fr]],
+    pub point: &'a [Fr],
+    pub values: &'a [Fr],
 }
 
 fn powers(base: Fr, n: usize) -> Vec<Fr> {
@@ -60,75 +69,92 @@ fn combine(polys: &[&[Fr]], coeffs: &[Fr]) -> Vec<Fr> {
     out
 }
 
-/// Proves the evaluations `values[i] = f̃_i(point)` of polynomials given by
-/// their evaluation tables (all of length `2^len(point)`, `len(point) ≥ 2`).
-/// `point` is in the sum-check's order (first variable = most significant
-/// index bit). The caller must have absorbed the commitments.
-pub fn prove(
-    tr: &mut KeccakTranscript,
-    ck: &CommitmentKey<G1>,
-    polys: &[&[Fr]],
-    point: &[Fr],
-    values: &[Fr],
-) -> HyperKzgProof {
-    let ell = point.len();
-    assert!(ell >= 2, "HyperKZG needs at least two variables");
-    assert!(polys.iter().all(|p| p.len() == 1 << ell));
-
-    tr.absorb_scalars(point);
-    tr.absorb_scalars(values);
-    let q = powers(tr.challenge(), polys.len());
-    let u: Vec<Fr> = point.iter().rev().copied().collect();
-
-    // Fold.
-    let mut layers: Vec<Vec<Fr>> = alloc::vec![combine(polys, &q)];
-    for u_i in &u[..ell - 1] {
-        let prev = layers.last().expect("non-empty");
-        let next = (0..prev.len() / 2)
-            .map(|j| prev[2 * j] + *u_i * (prev[2 * j + 1] - prev[2 * j]))
-            .collect();
-        layers.push(next);
-    }
-    debug_assert_eq!(
-        {
-            let last = layers.last().expect("non-empty");
-            last[0] + u[ell - 1] * (last[1] - last[0])
-        },
-        values
+/// Proves all `claims` jointly: every folded polynomial of every claim is
+/// opened at the *same* three points `r, −r, r²`, so the whole batch costs
+/// three KZG proofs regardless of the number of claims. Points are in the
+/// sum-check's order (first variable = most significant index bit) and need
+/// at least two variables. The caller must have absorbed the commitments.
+pub fn prove(tr: &mut KeccakTranscript, ck: &CommitmentKey<G1>, claims: &[Claim]) -> HyperKzgProof {
+    // Fold every claim and commit to its layers.
+    let mut all_layers: Vec<Vec<Vec<Fr>>> = Vec::with_capacity(claims.len());
+    let mut comms = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let ell = claim.point.len();
+        assert!(ell >= 2, "HyperKZG needs at least two variables");
+        assert!(claim.polys.iter().all(|p| p.len() == 1 << ell));
+        tr.absorb_scalars(claim.point);
+        tr.absorb_scalars(claim.values);
+        let q = powers(tr.challenge(), claim.polys.len());
+        let u: Vec<Fr> = claim.point.iter().rev().copied().collect();
+        let mut layers: Vec<Vec<Fr>> = alloc::vec![combine(claim.polys, &q)];
+        for u_i in &u[..ell - 1] {
+            let prev = layers.last().expect("non-empty");
+            let next = (0..prev.len() / 2)
+                .map(|j| prev[2 * j] + *u_i * (prev[2 * j + 1] - prev[2 * j]))
+                .collect();
+            layers.push(next);
+        }
+        debug_assert_eq!(
+            {
+                let last = layers.last().expect("non-empty");
+                last[0] + u[ell - 1] * (last[1] - last[0])
+            },
+            claim
+                .values
+                .iter()
+                .zip(&q)
+                .fold(Fr::zero(), |acc, (v, q)| acc + *v * q),
+            "claimed values are not the evaluations at the point"
+        );
+        let c: Vec<G1> = layers[1..]
             .iter()
-            .zip(&q)
-            .fold(Fr::zero(), |acc, (v, q)| acc + *v * q),
-        "claimed values are not the evaluations at the point"
-    );
-    let comms: Vec<G1> = layers[1..]
-        .iter()
-        .map(|p| ck.commit(p, Fr::zero()))
-        .collect();
-    tr.absorb_points(&comms);
+            .map(|p| ck.commit(p, Fr::zero()))
+            .collect();
+        tr.absorb_points(&c);
+        comms.push(c);
+        all_layers.push(layers);
+    }
 
+    // One evaluation point for everything.
     let r = tr.challenge();
-    let y_pos: Vec<Fr> = layers.iter().map(|p| kzg::evaluate(p, r)).collect();
-    let y_neg: Vec<Fr> = layers.iter().map(|p| kzg::evaluate(p, -r)).collect();
-    let y_sq: Vec<Fr> = layers[1..]
-        .iter()
-        .map(|p| kzg::evaluate(p, r * r))
-        .collect();
-    tr.absorb_scalars(&y_pos);
-    tr.absorb_scalars(&y_neg);
-    tr.absorb_scalars(&y_sq);
+    let evals = |z: Fr, skip: usize| -> Vec<Vec<Fr>> {
+        all_layers
+            .iter()
+            .map(|layers| layers[skip..].iter().map(|p| kzg::evaluate(p, z)).collect())
+            .collect()
+    };
+    let (y_pos, y_neg, y_sq) = (evals(r, 0), evals(-r, 0), evals(r * r, 1));
+    for j in 0..claims.len() {
+        tr.absorb_scalars(&y_pos[j]);
+        tr.absorb_scalars(&y_neg[j]);
+        tr.absorb_scalars(&y_sq[j]);
+    }
 
-    let d = powers(tr.challenge(), ell);
-    let all: Vec<&[Fr]> = layers.iter().map(Vec::as_slice).collect();
-    let batch = combine(&all, &d);
-    let batch_tail = combine(&all[1..], &d[1..]);
+    // Batch all layers with powers of d; the r² batch skips the first layers.
+    let total: usize = all_layers.iter().map(Vec::len).sum();
+    let d = powers(tr.challenge(), total);
+    let mut every: Vec<&[Fr]> = Vec::with_capacity(total);
+    let (mut tail, mut tail_d) = (Vec::new(), Vec::new());
+    let mut t = 0;
+    for layers in &all_layers {
+        for (i, layer) in layers.iter().enumerate() {
+            every.push(layer);
+            if i > 0 {
+                tail.push(layer.as_slice());
+                tail_d.push(d[t]);
+            }
+            t += 1;
+        }
+    }
+    let batch = combine(&every, &d);
+    let batch_tail = combine(&tail, &tail_d);
     let pi = [
         kzg::open(ck, &batch, r).1,
         kzg::open(ck, &batch, -r).1,
         kzg::open(ck, &batch_tail, r * r).1,
     ];
     tr.absorb_points(&pi);
-    // The verifier draws its batching challenge here; stay in sync so that
-    // several openings can share one transcript.
+    // The verifier draws its batching challenge here; stay in sync.
     let _ = tr.challenge();
     HyperKzgProof {
         comms,
@@ -139,84 +165,104 @@ pub fn prove(
     }
 }
 
-/// Verifies the evaluations of the (unblinded) commitments `comms` at
-/// `point`, up to the pairing equation `e(L, G₂) = e(R, [τ]₂)` whose two G1
-/// points are returned. `None` means the proof is already known to be wrong.
+/// Verifies the joint opening of `claims` — each a list of (unblinded)
+/// commitments with their claimed values at a point — up to the pairing
+/// equation `e(L, G₂) = e(R, [τ]₂)` whose two G1 points are returned.
+/// `None` means the proof is already known to be wrong.
 pub fn verify(
     tr: &mut KeccakTranscript,
-    comms: &[G1],
-    point: &[Fr],
-    values: &[Fr],
+    claims: &[(Vec<G1>, &[Fr], &[Fr])],
     proof: &HyperKzgProof,
 ) -> Option<(G1, G1)> {
-    let ell = point.len();
-    if ell < 2
-        || comms.len() != values.len()
-        || proof.comms.len() != ell - 1
-        || proof.y_pos.len() != ell
-        || proof.y_neg.len() != ell
-        || proof.y_sq.len() != ell - 1
+    let n = claims.len();
+    if proof.comms.len() != n
+        || proof.y_pos.len() != n
+        || proof.y_neg.len() != n
+        || proof.y_sq.len() != n
     {
         return None;
     }
-    tr.absorb_scalars(point);
-    tr.absorb_scalars(values);
-    let q = powers(tr.challenge(), comms.len());
-    let comm = comms
-        .iter()
-        .zip(&q)
-        .fold(G1::zero(), |acc, (c, q)| acc + *c * q);
-    let value = values
-        .iter()
-        .zip(&q)
-        .fold(Fr::zero(), |acc, (v, q)| acc + *v * q);
-    let u: Vec<Fr> = point.iter().rev().copied().collect();
+    let mut combined = Vec::with_capacity(n); // (commitment, value) per claim
+    for (j, (comms, point, values)) in claims.iter().enumerate() {
+        let ell = point.len();
+        if ell < 2
+            || comms.len() != values.len()
+            || proof.comms[j].len() != ell - 1
+            || proof.y_pos[j].len() != ell
+            || proof.y_neg[j].len() != ell
+            || proof.y_sq[j].len() != ell - 1
+        {
+            return None;
+        }
+        tr.absorb_scalars(point);
+        tr.absorb_scalars(values);
+        let q = powers(tr.challenge(), comms.len());
+        let comm = comms
+            .iter()
+            .zip(&q)
+            .fold(G1::zero(), |acc, (c, q)| acc + *c * q);
+        let value = values
+            .iter()
+            .zip(&q)
+            .fold(Fr::zero(), |acc, (v, q)| acc + *v * q);
+        tr.absorb_points(&proof.comms[j]);
+        combined.push((comm, value));
+    }
 
-    tr.absorb_points(&proof.comms);
     let r = tr.challenge();
     if r.is_zero() {
         return None;
     }
-    tr.absorb_scalars(&proof.y_pos);
-    tr.absorb_scalars(&proof.y_neg);
-    tr.absorb_scalars(&proof.y_sq);
-
-    // Folding consistency, ending in the claimed value.
     let two_r = r + r;
-    for (i, u_i) in u.iter().enumerate() {
-        let next = if i + 1 < ell { proof.y_sq[i] } else { value };
-        let (yp, yn) = (proof.y_pos[i], proof.y_neg[i]);
-        if two_r * next != r * (Fr::one() - u_i) * (yp + yn) + *u_i * (yp - yn) {
-            return None;
+    for (j, (_, point, _)) in claims.iter().enumerate() {
+        tr.absorb_scalars(&proof.y_pos[j]);
+        tr.absorb_scalars(&proof.y_neg[j]);
+        tr.absorb_scalars(&proof.y_sq[j]);
+        // Folding consistency, ending in the claimed value.
+        let ell = point.len();
+        for (i, u_i) in point.iter().rev().enumerate() {
+            let next = if i + 1 < ell {
+                proof.y_sq[j][i]
+            } else {
+                combined[j].1
+            };
+            let (yp, yn) = (proof.y_pos[j][i], proof.y_neg[j][i]);
+            if two_r * next != r * (Fr::one() - u_i) * (yp + yn) + *u_i * (yp - yn) {
+                return None;
+            }
         }
     }
 
     // Batched KZG openings at r, −r and r².
-    let d = powers(tr.challenge(), ell);
-    let tail = proof
-        .comms
-        .iter()
-        .zip(&d[1..])
-        .fold(G1::zero(), |acc, (c, d)| acc + *c * d);
-    let dot = |ys: &[Fr], ds: &[Fr]| {
-        ys.iter()
-            .zip(ds)
-            .fold(Fr::zero(), |acc, (y, d)| acc + *y * d)
-    };
-    let openings = [
-        (comm + tail, r, dot(&proof.y_pos, &d), proof.pi[0]),
-        (comm + tail, -r, dot(&proof.y_neg, &d), proof.pi[1]),
-        (tail, r * r, dot(&proof.y_sq, &d[1..]), proof.pi[2]),
-    ];
-    tr.absorb_points(&proof.pi);
-    let g = powers(tr.challenge(), 3);
-    let generator = G1::generator();
-    let mut left = G1::zero();
-    let mut right = G1::zero();
-    for ((c, z, y, pi), g) in openings.iter().zip(&g) {
-        left += (*c - generator * y + *pi * z) * g;
-        right += *pi * g;
+    let d_base = tr.challenge();
+    let mut d = Fr::one();
+    let (mut heads, mut tails) = (G1::zero(), G1::zero());
+    let (mut b_pos, mut b_neg, mut b_sq) = (Fr::zero(), Fr::zero(), Fr::zero());
+    for (j, (comm, _)) in combined.iter().enumerate() {
+        for i in 0..proof.y_pos[j].len() {
+            if i == 0 {
+                heads += *comm * d;
+            } else {
+                tails += proof.comms[j][i - 1] * d;
+                b_sq += d * proof.y_sq[j][i - 1];
+            }
+            b_pos += d * proof.y_pos[j][i];
+            b_neg += d * proof.y_neg[j][i];
+            d *= d_base;
+        }
     }
+    tr.absorb_points(&proof.pi);
+    let g = tr.challenge();
+    let g2 = g * g;
+    let one = Fr::one();
+    // L = (1+g)·heads + (1+g+g²)·tails − (b⁺ + g·b⁻ + g²·b^sq)·G
+    //     + r·π₀ − g·r·π₁ + g²·r²·π₂,          R = π₀ + g·π₁ + g²·π₂
+    let left = heads * (one + g) + tails * (one + g + g2)
+        - G1::generator() * (b_pos + g * b_neg + g2 * b_sq)
+        + proof.pi[0] * r
+        - proof.pi[1] * (g * r)
+        + proof.pi[2] * (g2 * r * r);
+    let right = proof.pi[0] + proof.pi[1] * g + proof.pi[2] * g2;
     Some((left, right))
 }
 
@@ -250,57 +296,95 @@ mod tests {
     use ark_std::test_rng;
 
     #[test]
-    fn hyperkzg_batched_openings() {
+    fn hyperkzg_joint_openings() {
         let mut rng = test_rng();
         let srs = Srs::insecure_for_testing(64, &mut rng);
         let ck = srs.commitment_key(b"hyperkzg-test", 64);
-        for ell in [2usize, 3, 6] {
-            let n = 1 << ell;
-            let polys: Vec<Vec<Fr>> = (0..3)
-                .map(|_| (0..n).map(|_| Fr::rand(&mut rng)).collect())
-                .collect();
-            let refs: Vec<&[Fr]> = polys.iter().map(Vec::as_slice).collect();
-            let comms: Vec<G1> = polys.iter().map(|p| ck.commit(p, Fr::zero())).collect();
-            let point: Vec<Fr> = (0..ell).map(|_| Fr::rand(&mut rng)).collect();
-            let values: Vec<Fr> = polys.iter().map(|p| mle_eval(p, &point)).collect();
+        // Three claims of different sizes and arities, opened jointly.
+        let shapes = [(2usize, 1usize), (6, 3), (3, 2)];
+        let polys: Vec<Vec<Vec<Fr>>> = shapes
+            .iter()
+            .map(|(ell, count)| {
+                (0..*count)
+                    .map(|_| (0..1 << ell).map(|_| Fr::rand(&mut rng)).collect())
+                    .collect()
+            })
+            .collect();
+        let points: Vec<Vec<Fr>> = shapes
+            .iter()
+            .map(|(ell, _)| (0..*ell).map(|_| Fr::rand(&mut rng)).collect())
+            .collect();
+        let values: Vec<Vec<Fr>> = polys
+            .iter()
+            .zip(&points)
+            .map(|(ps, point)| ps.iter().map(|p| mle_eval(p, point)).collect())
+            .collect();
+        let comms: Vec<Vec<G1>> = polys
+            .iter()
+            .map(|ps| ps.iter().map(|p| ck.commit(p, Fr::zero())).collect())
+            .collect();
 
-            let mut tr = KeccakTranscript::new(b"test");
-            let proof = prove(&mut tr, &ck, &refs, &point, &values);
-            let check = |comms: &[G1], point: &[Fr], values: &[Fr], proof: &HyperKzgProof| {
+        let refs: Vec<Vec<&[Fr]>> = polys
+            .iter()
+            .map(|ps| ps.iter().map(Vec::as_slice).collect())
+            .collect();
+        let claims: Vec<Claim> = (0..3)
+            .map(|j| Claim {
+                polys: &refs[j],
+                point: &points[j],
+                values: &values[j],
+            })
+            .collect();
+        let mut tr = KeccakTranscript::new(b"test");
+        let proof = prove(&mut tr, &ck, &claims);
+
+        let check =
+            |comms: &[Vec<G1>], points: &[Vec<Fr>], values: &[Vec<Fr>], proof: &HyperKzgProof| {
+                let claims: Vec<(Vec<G1>, &[Fr], &[Fr])> = (0..3)
+                    .map(|j| (comms[j].clone(), points[j].as_slice(), values[j].as_slice()))
+                    .collect();
                 let mut tr = KeccakTranscript::new(b"test");
-                verify(&mut tr, comms, point, values, proof)
+                verify(&mut tr, &claims, proof)
                     .is_some_and(|(l, r)| pairing_check(l, r, srs.tau_g2))
             };
-            assert!(check(&comms, &point, &values, &proof));
+        assert!(check(&comms, &points, &values, &proof));
 
-            // Wrong value, point, commitment and every proof component.
+        // Wrong value, point or commitment in any claim.
+        for j in 0..3 {
             let mut bad = values.clone();
-            bad[1] += Fr::one();
-            assert!(!check(&comms, &point, &bad, &proof));
-            let mut bad = point.clone();
-            bad[0] += Fr::one();
+            bad[j][0] += Fr::one();
+            assert!(!check(&comms, &points, &bad, &proof));
+            let mut bad = points.clone();
+            bad[j][0] += Fr::one();
             assert!(!check(&comms, &bad, &values, &proof));
             let mut bad = comms.clone();
-            bad[2] += ck.h;
-            assert!(!check(&bad, &point, &values, &proof));
+            bad[j][0] += ck.h;
+            assert!(!check(&bad, &points, &values, &proof));
+            // Every proof component of that claim.
             let mut bad = proof.clone();
-            bad.comms[0] += ck.h;
-            assert!(!check(&comms, &point, &values, &bad));
-            for which in 0..3 {
-                let mut bad = proof.clone();
-                match which {
-                    0 => bad.y_pos[ell - 1] += Fr::one(),
-                    1 => bad.y_neg[0] += Fr::one(),
-                    _ => bad.y_sq[0] += Fr::one(),
-                }
-                assert!(!check(&comms, &point, &values, &bad));
-                let mut bad = proof.clone();
-                bad.pi[which] += ck.h;
-                assert!(!check(&comms, &point, &values, &bad));
-            }
+            bad.comms[j][0] += ck.h;
+            assert!(!check(&comms, &points, &values, &bad));
             let mut bad = proof.clone();
-            bad.y_sq.pop();
-            assert!(!check(&comms, &point, &values, &bad));
+            *bad.y_pos[j].last_mut().unwrap() += Fr::one();
+            assert!(!check(&comms, &points, &values, &bad));
+            let mut bad = proof.clone();
+            bad.y_neg[j][0] += Fr::one();
+            assert!(!check(&comms, &points, &values, &bad));
+            let mut bad = proof.clone();
+            bad.y_sq[j][0] += Fr::one();
+            assert!(!check(&comms, &points, &values, &bad));
+            let mut bad = proof.clone();
+            bad.y_sq[j].pop();
+            assert!(!check(&comms, &points, &values, &bad));
         }
+        for which in 0..3 {
+            let mut bad = proof.clone();
+            bad.pi[which] += ck.h;
+            assert!(!check(&comms, &points, &values, &bad));
+        }
+        // Moving a value between two claims.
+        let mut bad = values.clone();
+        bad[0][0] = values[2][0];
+        assert!(!check(&comms, &points, &bad, &proof));
     }
 }

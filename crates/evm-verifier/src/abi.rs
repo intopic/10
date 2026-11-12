@@ -122,13 +122,13 @@ pub fn decider_key(params: &EvmParams, vk: &VerifyingKey<Bn254>) -> Vec<Word> {
     words
 }
 
-/// `registerCircuit(bytes32 vk, bytes32 keyHash)`.
+/// `registerDevDeciderKey(bytes32 vk, bytes32 keyHash)` (Groth16 development mode).
 pub fn register_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
     let mut hasher = Keccak256::new();
     for w in key {
         hasher.update(w);
     }
-    let mut out = selector("registerCircuit(bytes32,bytes32)").to_vec();
+    let mut out = selector("registerDevDeciderKey(bytes32,bytes32)").to_vec();
     out.extend(vk);
     out.extend(hasher.finalize());
     out
@@ -178,23 +178,21 @@ pub fn finalize_with_proof(
 
 /// The universal decider key passed to `finalizeUniversal`: the circuit's
 /// dimensions and matrix commitments, then the blinding generator and `[τ]₂`.
+/// Its `keccak256` is the `vk` the session must have been opened with.
 pub fn universal_key(params: &EvmParams, key: &crate::universal::CircuitKey) -> Vec<Word> {
     let tau_g2 = params.tau_g2.expect("universal key needs KZG parameters");
-    let mut words = key.words();
-    words.extend(g1_words(&params.ck.h));
-    words.extend(g2_words(&tau_g2));
-    words
+    key.contract_words(&params.ck.h, &tau_g2)
 }
 
-/// `registerUniversalCircuit(bytes32 vk, bytes32 keyHash)`.
-pub fn register_universal_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
-    let mut hasher = Keccak256::new();
+/// `announceCircuit(uint256[] key)`: optional, permissionless publication
+/// of a circuit key, so that others can find and audit it.
+pub fn announce_circuit(key: &[Word]) -> Vec<u8> {
+    let mut out = selector("announceCircuit(uint256[])").to_vec();
+    out.extend(uint(0x20));
+    out.extend(uint(key.len()));
     for w in key {
-        hasher.update(w);
+        out.extend(w);
     }
-    let mut out = selector("registerUniversalCircuit(bytes32,bytes32)").to_vec();
-    out.extend(vk);
-    out.extend(hasher.finalize());
     out
 }
 

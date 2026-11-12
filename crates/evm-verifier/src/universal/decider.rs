@@ -26,15 +26,16 @@
 //! number of pairings, which is what makes an EVM verifier possible.
 
 use super::{
-    hyperkzg::{self, mle_eval, HyperKzgProof},
+    hyperkzg::{self, mle_eval, Claim, HyperKzgProof},
     transcript::KeccakTranscript,
 };
 use crate::{point_words, word, EvmParams, Word};
 use alloc::vec::Vec;
-use ark_bn254::{Fr, G1Projective as G1};
+use ark_bn254::{Fr, G1Projective as G1, G2Affine};
 use ark_ff::{batch_inversion, One, Zero};
 use core_r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness, SparseMatrix};
 use decider_zk::sumcheck::{self, eq_points, eq_table};
+use llull_folder::CommitmentKey;
 use sha3::{Digest, Keccak256};
 
 fn log2_ceil(v: usize) -> usize {
@@ -109,11 +110,10 @@ pub struct CircuitKey {
 impl CircuitKey {
     /// Commits to the circuit's matrices. Deterministic and public: it uses
     /// only the circuit and the reference string, no secret randomness.
-    pub fn preprocess(params: &EvmParams) -> Self {
-        let shape = &params.shape;
+    pub fn preprocess(shape: &R1CSShape<Fr>, ck: &CommitmentKey<G1>) -> Self {
         let dims = Dims::of(shape);
         assert!(
-            params.ck.len() >= dims.srs_len(),
+            ck.len() >= dims.srs_len(),
             "reference string too short: the universal decider needs {} powers",
             dims.srs_len()
         );
@@ -146,7 +146,7 @@ impl CircuitKey {
         }
         let as_field = |idx: &[usize]| idx.iter().map(|i| Fr::from(*i as u64)).collect::<Vec<_>>();
         let (row, col) = (as_field(&row_idx), as_field(&col_idx));
-        let commit = |v: &[Fr]| params.ck.commit(v, Fr::zero());
+        let commit = |v: &[Fr]| ck.commit(v, Fr::zero());
         let comms = [
             commit(&row),
             commit(&col),
@@ -179,6 +179,31 @@ impl CircuitKey {
             .collect();
         words.extend(self.comms.iter().flat_map(point_words));
         words
+    }
+
+    /// The full decider key as the contract receives it: [`Self::words`]
+    /// followed by the blinding generator `H` and `[τ]₂` (23 words).
+    pub fn contract_words(&self, h: &ark_bn254::G1Affine, tau_g2: &G2Affine) -> Vec<Word> {
+        use ark_ec::AffineRepr;
+        let mut words = self.words();
+        let (hx, hy) = h.xy().expect("H is not the identity");
+        words.extend([word(&hx), word(&hy)]);
+        let (x, y) = tau_g2.xy().expect("[τ]₂ is not the identity");
+        words.extend([word(&x.c1), word(&x.c0), word(&y.c1), word(&y.c0)]);
+        words
+    }
+
+    /// The circuit's on-chain identity: `keccak256` of
+    /// [`Self::contract_words`]. A session opened with this identifier can
+    /// only be finalized with this key, so no registry or administrator is
+    /// involved; anyone recomputes the identifier from the circuit and the
+    /// reference string and compares.
+    pub fn circuit_id(&self, h: &ark_bn254::G1Affine, tau_g2: &G2Affine) -> Word {
+        let mut hasher = Keccak256::new();
+        for w in self.contract_words(h, tau_g2) {
+            hasher.update(w);
+        }
+        hasher.finalize().into()
     }
 
     /// `keccak256` of [`Self::words`].
@@ -216,9 +241,9 @@ pub struct UniversalProof {
     pub sc_z: Vec<Fr>,
     /// `h2_col, count_col` at `r_z`.
     pub evals_z: [Fr; 2],
-    /// Openings of: `E`; `W`; the nine `K`-polynomials; the two row-table
-    /// polynomials; the two column-table polynomials.
-    pub openings: [HyperKzgProof; 5],
+    /// Joint opening of: `E`; `W`; the nine `K`-polynomials; the two
+    /// row-table polynomials; the two column-table polynomials.
+    pub openings: HyperKzgProof,
 }
 
 impl UniversalProof {
@@ -241,13 +266,16 @@ impl UniversalProof {
         scalars(&mut w, &self.evals_m);
         scalars(&mut w, &self.sc_z);
         scalars(&mut w, &self.evals_z);
-        for o in &self.openings {
-            points(&mut w, &o.comms);
-            scalars(&mut w, &o.y_pos);
-            scalars(&mut w, &o.y_neg);
-            scalars(&mut w, &o.y_sq);
-            points(&mut w, &o.pi);
+        let o = &self.openings;
+        for c in &o.comms {
+            points(&mut w, c);
         }
+        for j in 0..o.y_pos.len() {
+            scalars(&mut w, &o.y_pos[j]);
+            scalars(&mut w, &o.y_neg[j]);
+            scalars(&mut w, &o.y_sq[j]);
+        }
+        points(&mut w, &o.pi);
         w
     }
 
@@ -474,21 +502,38 @@ pub fn prove(
     tr.absorb_scalars(&evals_z);
 
     // ---- 6. Openings ---------------------------------------------------------
-    // After every opening the verifier draws the weight with which that
-    // opening's pairing equation enters the single final check.
-    let ck = &params.ck;
-    let mut open = |polys: &[&[Fr]], point: &[Fr], values: &[Fr]| {
-        let proof = hyperkzg::prove(&mut tr, ck, polys, point, values);
-        let _ = tr.challenge();
-        proof
-    };
-    let openings = [
-        open(&[&e_padded], &rx, &claims[3..]),
-        open(&[&w_padded], &ry[1..], &[v_w]),
-        open(&polys_k, &rk, &evals_k),
-        open(&[&h2r, &key.count_row], &rj, &evals_m),
-        open(&[&h2c, &key.count_col], &rz, &evals_z),
-    ];
+    // All five claims are opened jointly at the same three points.
+    let openings = hyperkzg::prove(
+        &mut tr,
+        &params.ck,
+        &[
+            Claim {
+                polys: &[&e_padded],
+                point: &rx,
+                values: &claims[3..],
+            },
+            Claim {
+                polys: &[&w_padded],
+                point: &ry[1..],
+                values: &[v_w],
+            },
+            Claim {
+                polys: &polys_k,
+                point: &rk,
+                values: &evals_k,
+            },
+            Claim {
+                polys: &[&h2r, &key.count_row],
+                point: &rj,
+                values: &evals_m,
+            },
+            Claim {
+                polys: &[&h2c, &key.count_col],
+                point: &rz,
+                values: &evals_z,
+            },
+        ],
+    );
 
     UniversalProof {
         r_w: witness.r_w,
@@ -652,14 +697,8 @@ pub fn verify(
         (alloc::vec![p[4], k[5]], &rj, &proof.evals_m),
         (alloc::vec![p[5], k[6]], &rz, &proof.evals_z),
     ];
-    let (mut left, mut right) = (G1::zero(), G1::zero());
-    for ((comms, point, values), opening) in claims.iter().zip(&proof.openings) {
-        let Some((l, r)) = hyperkzg::verify(&mut tr, comms, point, values, opening) else {
-            return false;
-        };
-        let weight = tr.challenge();
-        left += l * weight;
-        right += r * weight;
-    }
+    let Some((left, right)) = hyperkzg::verify(&mut tr, &claims, &proof.openings) else {
+        return false;
+    };
     hyperkzg::pairing_check(left, right, tau_g2)
 }
