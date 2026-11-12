@@ -261,16 +261,35 @@ const intrinsicGas = (data) =>
   assert.equal(finalU.steps, STEPS);
   await revertsWith(call(prover, fin2.calldata), "SessionClosed()");
 
+  // --- Universal decider: cost as the circuit grows ----------------------------
+  let extraSteps = 0;
+  for (const rounds of [128, 2048]) {
+    const args = ["--steps", "1", "--mode", "universal", "--rounds", String(rounds)];
+    const pre = fixture(args);
+    const opened = await call(prover, pre.open);
+    assert.ok(opened.ok);
+    const fx2 = fixture(["--session", opened.ret, ...args]);
+    assert.ok((await call(prover, fx2.steps[0].calldata, FEE)).ok);
+    extraSteps += 1;
+    assert.ok((await call(owner, fx2.register)).ok);
+    const res = await call(prover, fx2.finalizeUniversal.calldata);
+    assert.ok(res.ok, `finalizeUniversal reverted for ${2 * rounds} constraints`);
+    console.log(
+      `finalizeUniversal    : ${res.gas} gas, proof ${fx2.finalizeUniversal.proofBytes} bytes (${2 * rounds} constraints)`
+    );
+    assert.equal((await readAccumulator(fx2.getAccumulator)).decided, true);
+  }
+
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  assert.equal(await balance(to), FEE * BigInt(3 * STEPS));
+  assert.equal(await balance(to), FEE * BigInt(3 * STEPS + extraSteps));
   const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(owner.toString()));
   await revertsWith(call(stranger, withdraw), "NotOwner()");
   await revertsWith(call(stranger, "0x" + sel["setProtocolFee(uint256)"] + word(0n)), "NotOwner()");
   const before = await balance(owner);
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
-  assert.equal((await balance(owner)) - before, FEE * BigInt(3 * STEPS));
+  assert.equal((await balance(owner)) - before, FEE * BigInt(3 * STEPS + extraSteps));
   console.log("OK");
 })().catch((e) => {
   console.error(e);

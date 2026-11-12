@@ -474,13 +474,20 @@ pub fn prove(
     tr.absorb_scalars(&evals_z);
 
     // ---- 6. Openings ---------------------------------------------------------
+    // After every opening the verifier draws the weight with which that
+    // opening's pairing equation enters the single final check.
     let ck = &params.ck;
+    let mut open = |polys: &[&[Fr]], point: &[Fr], values: &[Fr]| {
+        let proof = hyperkzg::prove(&mut tr, ck, polys, point, values);
+        let _ = tr.challenge();
+        proof
+    };
     let openings = [
-        hyperkzg::prove(&mut tr, ck, &[&e_padded], &rx, &claims[3..]),
-        hyperkzg::prove(&mut tr, ck, &[&w_padded], &ry[1..], &[v_w]),
-        hyperkzg::prove(&mut tr, ck, &polys_k, &rk, &evals_k),
-        hyperkzg::prove(&mut tr, ck, &[&h2r, &key.count_row], &rj, &evals_m),
-        hyperkzg::prove(&mut tr, ck, &[&h2c, &key.count_col], &rz, &evals_z),
+        open(&[&e_padded], &rx, &claims[3..]),
+        open(&[&w_padded], &ry[1..], &[v_w]),
+        open(&polys_k, &rk, &evals_k),
+        open(&[&h2r, &key.count_row], &rj, &evals_m),
+        open(&[&h2c, &key.count_col], &rz, &evals_z),
     ];
 
     UniversalProof {
@@ -645,20 +652,14 @@ pub fn verify(
         (alloc::vec![p[4], k[5]], &rj, &proof.evals_m),
         (alloc::vec![p[5], k[6]], &rz, &proof.evals_z),
     ];
-    let mut pairs = Vec::with_capacity(5);
+    let (mut left, mut right) = (G1::zero(), G1::zero());
     for ((comms, point, values), opening) in claims.iter().zip(&proof.openings) {
-        let Some(pair) = hyperkzg::verify(&mut tr, comms, point, values, opening) else {
+        let Some((l, r)) = hyperkzg::verify(&mut tr, comms, point, values, opening) else {
             return false;
         };
-        pairs.push(pair);
+        let weight = tr.challenge();
+        left += l * weight;
+        right += r * weight;
     }
-    let weight = tr.challenge();
-    let mut w = Fr::one();
-    let (mut left, mut right) = (G1::zero(), G1::zero());
-    for (l, r) in pairs {
-        left += l * w;
-        right += r * w;
-        w *= weight;
-    }
-    !weight.is_zero() && hyperkzg::pairing_check(left, right, tau_g2)
+    hyperkzg::pairing_check(left, right, tau_g2)
 }

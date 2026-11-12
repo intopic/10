@@ -82,9 +82,19 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
   - hapje shumëlineare HyperKZG mbi të njëjtat angazhime KZG të palosjes; 5 hapje, një çiftëzim
   - transkript Keccak identik në Rust dhe Solidity; `finalizeUniversal` e shënon sesionin `decided`
   - teste: ~60 falsifikime në Rust; në EVM çdo fjalë e provës (232) dhe e çelësit refuzohet
-  - matje: provë 7.4 KB (16 kufizime) → 14.9 KB (1024); **~1.22 M gas** në EVM për qarkun e vogël
-- [ ] Ulja e gazit të `finalizeUniversal` (bashkimi i hapjeve në një pikë, më pak `ecMul`)
-- [ ] Vendimtari universal për qarqe të mëdha: SRS më e gjatë (`.ptau` me fuqi më të lartë), matje
+  - matje në EVM (gaz i `finalizeUniversal`, përfshirë palosjen maskuese dhe calldata):
+
+    | Kufizime të qarkut | Gaz | Prova |
+    |---|---|---|
+    | 16 | ~0.995 M | 7.4 KB |
+    | 256 | ~1.34 M | 12.4 KB |
+    | 4096 | ~1.69 M | 17.4 KB |
+
+    Rritja është logaritmike: rreth 87k gas dhe 1.25 KB për çdo dyfishim të qarkut
+  - optimizimi i parë (−18%): transkript dhe kopjime në assembly (`mcopy`), peshat e çiftëzimit të
+    futura në skalarë, një term i vetëm për gjeneratorin
+- [ ] Ulje e mëtejshme e gazit: bashkimi i pesë hapjeve në më pak pika vlerësimi
+- [ ] Qarqet > 4096 kufizime kërkojnë `.ptau` me fuqi më të lartë (matjet mbi 128 fuqi përdorin SRS testimi)
 - [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
@@ -141,7 +151,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
 | `finalizeWithProof` në EVM (Groth16, vetëm zhvillim) | ~456k gas, provë 544 bajt |
-| `finalizeUniversal` në EVM (zero setup, qark 16 kufizime) | ~1.22 M gas, provë 7.4 KB |
+| `finalizeUniversal` në EVM (zero setup) | ~1.0 M gas / 7.4 KB (16 kufizime) → ~1.69 M / 17.4 KB (4096) |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |

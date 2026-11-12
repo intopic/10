@@ -38,6 +38,7 @@ fn main() {
     let mut steps = 5usize;
     let mut onchain = false;
     let mut universal_mode = false;
+    let mut rounds_override: Option<usize> = None;
     let mut argv = std::env::args().skip(1);
     while let Some(flag) = argv.next() {
         let value = argv.next().expect("missing value");
@@ -50,6 +51,7 @@ fn main() {
                 }
             }
             "--steps" => steps = value.parse().expect("number"),
+            "--rounds" => rounds_override = Some(value.parse().expect("number")),
             "--mode" => {
                 onchain = value == "onchain";
                 universal_mode = value == "universal";
@@ -62,7 +64,7 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(0x5eed);
     // The universal mode commits to the matrices too; a smaller circuit
     // keeps it within the 128 powers of the test ceremony file.
-    let rounds = if universal_mode { 8 } else { 64 };
+    let rounds = rounds_override.unwrap_or(if universal_mode { 8 } else { 64 });
     let z0 = Fr::from(3u64);
     let (shape, _, _) = CubicChain { z_in: z0, rounds }
         .synthesize()
@@ -72,7 +74,13 @@ fn main() {
     let label = b"zeno-llull/evm-fixture";
     let params = if universal_mode {
         let len = universal::Dims::of(&shape).srs_len();
-        let srs = Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau");
+        // The test ceremony file has 128 powers; larger circuits (gas
+        // scaling measurements only) fall back to a locally sampled string.
+        let srs = if len <= 128 {
+            Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau")
+        } else {
+            Srs::insecure_for_testing(len, &mut rng)
+        };
         EvmParams::setup_universal(shape, label, &srs)
     } else if onchain {
         let len = shape
