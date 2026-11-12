@@ -14,6 +14,11 @@ use rand::rngs::OsRng;
 use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 
+/// `await initThreadPool(navigator.hardwareConcurrency)` starts the Web
+/// Worker pool; call it once before proving in the multi-threaded build.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-threads"))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 fn js_err(e: SdkError) -> JsError {
     JsError::new(&e.to_string())
 }

@@ -7,3 +7,11 @@ node_modules/
 /sdk/wasm/*.tgz
 /sdk/native/dist
 __pycache__/
+/sdk/android/zenollull/src/main/jniLibs
+/sdk/android/zenollull/src/main/java
+/sdk/android/zenollull/build
+/sdk/android/.gradle
+/sdk/android/build
+/sdk/ios/dist
+/sdk/wasm/node_modules
+/sdk/wasm/package-lock.json

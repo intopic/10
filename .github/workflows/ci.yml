@@ -70,6 +70,16 @@ jobs:
           export ZENO_LICENSE_PRIVATE_KEY ZENO_LICENSE_PUBLIC_KEY
           export ZENO_TEST_LICENSE="$(./target/release/zeno-license issue --customer ci --plan enterprise --days 1)"
           node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Multi-threaded build (Web Workers) on nightly
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
+          ./scripts/build-wasm-sdk-threads.sh
+      - name: Multi-threaded prover in headless Chromium
+        run: |
+          cd sdk/wasm
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          node test/browser-threads.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: npm pack (publish-ready tarball)
         run: npm pack
         working-directory: sdk/wasm
@@ -132,6 +142,54 @@ jobs:
         with:
           name: zenollull-native-sdk
           path: sdk/native/dist
+
+  android-aar:
+    name: Android AAR (arm64-v8a, armeabi-v7a, x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - run: ./scripts/build-android-aar.sh
+      - name: The AAR contains the bindings and all three ABIs
+        run: |
+          AAR=sdk/android/zenollull/build/outputs/aar/zenollull-release.aar
+          unzip -l "$AAR" | tee -a "$GITHUB_STEP_SUMMARY"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$AAR" | grep -q "jni/$abi/libzenollull.so"
+          done
+          unzip -l "$AAR" | grep -q classes.jar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zenollull-android-aar
+          path: sdk/android/zenollull/build/outputs/aar/*.aar
+
+  ios-xcframework:
+    name: iOS XCFramework (device + simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/build-ios-xcframework.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zenollull-ios-xcframework
+          path: sdk/ios/dist
 
   kpi:
     name: KPI — fold t=100, IVC, memorie

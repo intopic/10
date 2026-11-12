@@ -96,8 +96,11 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
 - [x] SDK native me UniFFI (`crates/mobile-ffi`): një API Rust → lidhje Swift, Kotlin dhe Python;
       test fund-më-fund në Python në CI (~93 ms / hap me shumë fije), kontroll tipesh për Swift
-- [ ] Paketimi për pajisje: XCFramework (kërkon makinë macOS) dhe AAR (kërkon Android NDK)
-- [ ] Shumë-fije në WASM (aktualisht një fije: ~1.3 s / hap)
+- [x] Paketimi për pajisje: `scripts/build-android-aar.sh` (AAR me arm64-v8a, armeabi-v7a, x86_64 +
+      lidhjet Kotlin, Gradle) dhe `scripts/build-ios-xcframework.sh` (XCFramework pajisje + simulator +
+      Swift), të dyja të ndërtuara në CI
+- [x] Shumë-fije në WASM (`wasm-bindgen-rayon`, varianti `@zenollull/wasm-sdk/threads`): ~350–390 ms / hap
+      me 4 fije në Chromium (nga ~0.9 s), finalizimi ~6 s (nga ~18 s); test në Chromium pa kokë në CI
 - [ ] Hyrje nga Noir dhe ONNX (zkML)
 
 ## Avancime opsionale (spec §4)
@@ -119,6 +122,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 | WASM (Node.js, 1 fije, qark Circom) | ~0.9–1.3 s / hap, ~161 MiB memorie |
+| WASM me shumë fije (Chromium, 4 fije, qark Circom) | ~350–390 ms / hap, ~170 MiB |
 | SDK native (Python/Swift/Kotlin, 4 fije, qark Circom) | ~93 ms / hap |
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |

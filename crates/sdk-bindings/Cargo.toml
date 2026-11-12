@@ -21,7 +21,11 @@ wasm-bindgen = "=0.2.130"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen-rayon = { version = "1.3", optional = true, features = ["no-bundler"] }
 
 [features]
 default = []
 parallel = ["zeno-ivc/parallel", "decider-zk/parallel"]
+# Multi-threaded WebAssembly (browser Web Workers + SharedArrayBuffer).
+# Needs nightly Rust with `-Z build-std` and `+atomics,+bulk-memory`.
+wasm-threads = ["parallel", "dep:wasm-bindgen-rayon"]

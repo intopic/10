@@ -10,12 +10,20 @@
       "browser": "./dist/web/sdk_bindings.js",
       "node": "./dist/node/sdk_bindings.js",
       "default": "./dist/web/sdk_bindings.js"
+    },
+    "./threads": {
+      "types": "./dist/web-threads/sdk_bindings.d.ts",
+      "default": "./dist/web-threads/sdk_bindings.js"
     }
   },
   "files": ["dist", "README.md"],
   "publishConfig": { "access": "restricted" },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  },
   "scripts": {
     "build": "../../scripts/build-wasm-sdk.sh",
-    "test": "node test/ivc.test.cjs"
+    "test": "node test/ivc.test.cjs",
+    "test:threads": "node test/browser-threads.test.cjs"
   }
 }

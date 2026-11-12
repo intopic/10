@@ -24,3 +24,23 @@ Ndërtimi dhe testimi:
 ```bash
 node sdk/wasm/test/ivc.test.cjs
 ```
+
+## Shumë fije në shfletues
+
+Varianti `@zenollull/wasm-sdk/threads` e ekzekuton provuesin mbi një grup Web Worker-ash
+(rreth 2.3× më shpejt me 4 fije). Faqja duhet të jetë *cross-origin isolated*
+(`Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp`).
+
+```js
+import init, { initThreadPool, ZenoLlullProver } from "@zenollull/wasm-sdk/threads";
+await init();
+await initThreadPool(navigator.hardwareConcurrency);
+```
+
+```bash
+./scripts/build-wasm-sdk-threads.sh
+```
+
+```bash
+node sdk/wasm/test/browser-threads.test.cjs
+```
