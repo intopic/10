@@ -106,6 +106,7 @@ fn main() {
 
     let mut state = z0;
     let mut step_items = Vec::new();
+    let mut step_proofs = Vec::new();
     for _ in 0..steps {
         let circuit = CubicChain {
             z_in: state,
@@ -120,6 +121,7 @@ fn main() {
             acc_json(&folder.acc),
             hex(&word(&state))
         ));
+        step_proofs.push(proof);
     }
     let open = hex(&abi::open_session(&params.vk, &[z0]));
     let get = hex(&abi::get_accumulator(&session));
@@ -170,9 +172,10 @@ fn main() {
     let snark_rejects_other = !verify_final(&params, &other, &snark);
 
     println!(
-        "{{\"vk\":\"{}\",\"open\":\"{open}\",\"steps\":[{}],\"finalize\":{{\"calldata\":\"{}\",\"accumulator\":{}}},\"getAccumulator\":\"{get}\",\"deciderAccepts\":{},\"deciderRejectsOther\":{}}}",
+        "{{\"vk\":\"{}\",\"open\":\"{open}\",\"steps\":[{}],\"batch\":\"{}\",\"finalize\":{{\"calldata\":\"{}\",\"accumulator\":{}}},\"getAccumulator\":\"{get}\",\"deciderAccepts\":{},\"deciderRejectsOther\":{}}}",
         hex(&params.vk),
         step_items.join(","),
+        hex(&abi::verify_folded_proof_batch(&session, &step_proofs)),
         hex(&abi::finalize(&session, &mask)),
         acc_json(&final_acc),
         snark_ok,

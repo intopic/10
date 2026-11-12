@@ -185,6 +185,54 @@ contract ZenoLlullVerifier {
         emit StepFolded(sessionId, step);
     }
 
+    /// @notice Folds many steps in one transaction. Storage is read and
+    /// written once, so the marginal cost of a step is its two scalar
+    /// multiplications, one hash and its calldata.
+    /// @param steps for each step, in order:
+    /// `comm_W.x, comm_W.y, comm_T.x, comm_T.y, z_in…, z_out…`.
+    function verifyFoldedProofBatch(bytes32 sessionId, uint256[] calldata steps) external payable {
+        Session storage s = sessions[sessionId];
+        if (s.prover != msg.sender) revert NotSessionProver();
+        if (s.finalized) revert SessionClosed();
+        uint256 k = s.state.length;
+        uint256 stride = 4 + 2 * k;
+        uint256 count = steps.length / stride;
+        if (count == 0 || steps.length != count * stride) revert MalformedProof();
+        if (msg.value != protocolFee * count) revert WrongFee();
+
+        // Accumulator and state in memory: [ex, ey, u, wx, wy], x, state.
+        uint256[5] memory a = [s.ex, s.ey, s.u, s.wx, s.wy];
+        uint256[] memory x = s.x;
+        uint256[] memory state = s.state;
+        bytes32 vk = s.vk;
+        for (uint256 n = 0; n < count; ++n) {
+            uint256 at = n * stride;
+            for (uint256 i = 0; i < k; ++i) {
+                if (steps[at + 4 + i] != state[i]) revert StateMismatch();
+                if (steps[at + 4 + k + i] >= R) revert ScalarOutOfRange();
+                state[i] = steps[at + 4 + k + i];
+            }
+            uint256 r = uint256(
+                keccak256(
+                    abi.encodePacked(
+                        TAG_FOLD, vk, a, x, steps[at:at + 4], steps[at + 4:at + stride]
+                    )
+                )
+            ) & CHALLENGE_MASK;
+            (a[3], a[4]) = _addMul(a[3], a[4], steps[at], steps[at + 1], r);
+            (a[0], a[1]) = _addMul(a[0], a[1], steps[at + 2], steps[at + 3], r);
+            a[2] = addmod(a[2], r, R);
+            for (uint256 i = 0; i < 2 * k; ++i) {
+                x[i] = addmod(x[i], mulmod(r, steps[at + 4 + i], R), R);
+            }
+        }
+        (s.ex, s.ey, s.u, s.wx, s.wy) = (a[0], a[1], a[2], a[3], a[4]);
+        for (uint256 i = 0; i < 2 * k; ++i) s.x[i] = x[i];
+        for (uint256 i = 0; i < k; ++i) s.state[i] = state[i];
+        s.steps += uint64(count);
+        emit StepFolded(sessionId, s.steps);
+    }
+
     /// @notice Closes the session by folding a random relaxed instance into
     /// the accumulator (zero-knowledge masking). The decider proof is then
     /// checked off-chain against the resulting accumulator.

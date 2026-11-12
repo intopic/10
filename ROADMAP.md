@@ -104,8 +104,21 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
       grupuara në një kontroll)
-- [ ] Mënyra B për IVC-në rekursive off-chain: akumulatori sekondar (Grumpkin) nuk ka precompile në
-      EVM; kërkon rindërtim të rekursionit (CycleFold) që pjesa në Grumpkin të jetë e vogël
+- [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
+      ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
+- [ ] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N).
+      Analiza:
+  - EVM nuk ka precompile për Grumpkin; një shumëzim skalar në Solidity kushton ~110–220k gas, pra
+    palosjet janë të mundshme, por hapja e një angazhimi Pedersen me `n` elemente kërkon `n`
+    shumëzime — e pamundur për akumulatorin sekondar aktual (~11k elemente)
+  - rruga që mbyll hendekun: **CycleFold** (qarku në Grumpkin bëhet ~1.5k kufizime) + një **qark
+    mbyllës BN254** që verifikon akumulatorin e vogël Grumpkin (MSM Pedersen brenda qarkut me
+    aritmetikë native Grumpkin + R1CS jo-native) dhe paloset si instanca e fundit BN254, e cila
+    vendoset me `finalizeUniversal`
+  - kostoja e vlerësuar: qark mbyllës ~4–8 M kufizime → SRS universale 2^24–2^25, dhjetëra GB RAM te
+    provuesi, ~2.5 M gas në EVM. E realizueshme në një server, jo në këtë mjedis (15 GB RAM)
+  - hapat: (1) qarku CycleFold dhe palosja e tij brenda qarkut primar; (2) stepper i ri IVC me
+    angazhime KZG në BN254; (3) qarku mbyllës; (4) matje në një makinë me ≥ 64 GB RAM
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
@@ -155,6 +168,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | SDK native (Python/Swift/Kotlin, 4 fije, qark Circom) | ~93 ms / hap |
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
+| `verifyFoldedProofBatch` në EVM | ~22.9k gas për hap (100 hapa në një transaksion) |
 | `finalizeWithProof` në EVM (Groth16, vetëm zhvillim) | ~456k gas, provë 544 bajt |
 | `finalizeUniversal` në EVM (zero setup) | ~0.82 M gas / 6.7 KB (16 kufizime) → ~1.89 M / 21.6 KB (65 536) |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |

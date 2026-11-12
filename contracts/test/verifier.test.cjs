@@ -301,6 +301,31 @@ const intrinsicGas = (data) =>
     assert.equal((await readAccumulator(fx2.getAccumulator)).decided, true);
   }
 
+  // --- Many steps in one transaction ---------------------------------------------
+  const BATCH = 100;
+  {
+    const openedB2 = await call(prover, pre.open);
+    assert.ok(openedB2.ok);
+    const fbatch = fixture(["--session", openedB2.ret, "--steps", String(BATCH)]);
+    await revertsWith(call(prover, fbatch.batch, FEE), "WrongFee()");
+    await revertsWith(call(stranger, fbatch.batch, FEE * BigInt(BATCH)), "NotSessionProver()");
+    const res = await call(prover, fbatch.batch, FEE * BigInt(BATCH));
+    assert.ok(res.ok, "batch fold reverted");
+    const after = await readAccumulator(fbatch.getAccumulator);
+    // The batch reaches exactly the accumulator of folding the steps one by one.
+    assert.deepEqual(after.acc, fbatch.steps[BATCH - 1].accumulator);
+    assert.deepEqual(after.state, [fbatch.steps[BATCH - 1].state]);
+    assert.equal(after.steps, BATCH);
+    console.log(
+      `verifyFoldedProofBatch: ${res.gas} gas for ${BATCH} steps (${res.gas / BigInt(BATCH)} gas / step)`
+    );
+    // Replaying the batch does not continue from the current state.
+    await revertsWith(call(prover, fbatch.batch, FEE * BigInt(BATCH)), "StateMismatch()");
+    assert.ok((await call(prover, fbatch.finalize.calldata)).ok);
+    assert.equal(fbatch.deciderAccepts, true);
+    extraSteps += BATCH;
+  }
+
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
   assert.equal(await balance(to), FEE * BigInt(3 * STEPS + extraSteps));

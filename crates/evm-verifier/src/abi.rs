@@ -62,6 +62,25 @@ pub fn verify_folded_proof(session: &Word, step: &StepProof) -> Vec<u8> {
     out
 }
 
+/// `verifyFoldedProofBatch(bytes32 sessionId, uint256[] steps)`: for each
+/// step `comm_W ‖ comm_T ‖ z_in ‖ z_out`.
+pub fn verify_folded_proof_batch(session: &Word, steps: &[StepProof]) -> Vec<u8> {
+    let mut words: Vec<Word> = Vec::new();
+    for step in steps {
+        words.extend(point_words(&step.comm_w));
+        words.extend(point_words(&step.comm_t));
+        words.extend(step.public_inputs.iter().map(word));
+    }
+    let mut out = selector("verifyFoldedProofBatch(bytes32,uint256[])").to_vec();
+    out.extend(session);
+    out.extend(uint(0x40));
+    out.extend(uint(words.len()));
+    for w in words {
+        out.extend(w);
+    }
+    out
+}
+
 fn mask_bytes(mask: &MaskProof) -> Vec<u8> {
     let mut proof = Vec::new();
     for w in point_words(&mask.mask.comm_e) {
