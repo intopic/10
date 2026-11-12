@@ -9,6 +9,17 @@
 //! accumulator can later be opened with `O(√M)` group operations instead of
 //! `O(M)`.
 
+/// Bits of `t` in every folding challenge `r = 2^128 + 2t + 1`: one squeezed
+/// element gives 127 bits of entropy (see [`crate::gadgets::ec`]).
+pub const T_BITS: usize = 127;
+
+/// Default number of columns of the CycleFold row commitments. With the
+/// 936-constraint CycleFold circuit it gives 8 rows for `W` and 8 for `E`:
+/// the smallest closing circuit (8 + 8 variable-base and 128 fixed-base
+/// multiplications), for about 2.5k constraints per row and step (66.8k
+/// constraints per step in all, 468k non-zero entries).
+pub const CF_COLUMNS: usize = 128;
+
 pub mod augmented;
 pub mod circuit;
 pub mod hyrax;

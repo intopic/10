@@ -11,7 +11,7 @@ use super::{
         CfRelaxedWitness, HyraxKey,
     },
 };
-use crate::{ivc_stepper::IvcError, nova_ivc_circuit::StepCircuit};
+use crate::{gadgets::ec::odd_scalar, ivc_stepper::IvcError, nova_ivc_circuit::StepCircuit};
 use alloc::vec::Vec;
 use ark_crypto_primitives::sponge::{
     poseidon::{PoseidonConfig, PoseidonSponge},
@@ -30,9 +30,8 @@ use core_r1cs::{
     R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, RelaxedR1CSWitness,
 };
 use llull_folder::{
-    check_accumulator, commit_witness, nifs_prove_with,
-    transcript::{bits_to_field, poseidon_config},
-    CommitmentKey, FoldError,
+    check_accumulator, commit_witness, nifs_prove_with, transcript::poseidon_config, CommitmentKey,
+    FoldError,
 };
 use sha2::{Digest, Sha256};
 
@@ -291,7 +290,7 @@ where
             )
         } else {
             let mut sponge = PoseidonSponge::new(&params.poseidon);
-            let mut r_bits = Vec::new();
+            let mut t_bits = Vec::new();
             let (acc_u, acc_w, comm_t) = nifs_prove_with(
                 &params.ck,
                 &params.shape,
@@ -301,19 +300,19 @@ where
                 &self.last.1,
                 rng,
                 |comm_t| {
-                    r_bits = primary_challenge::<G1>(
+                    t_bits = primary_challenge::<G1>(
                         &mut sponge,
                         params.digest,
                         &self.acc.0,
                         &self.last.0,
                         comm_t,
                     );
-                    bits_to_field(&r_bits)
+                    odd_scalar(&t_bits)
                 },
             )?;
             let delegated = [
-                CycleFoldCircuit::<G1>::new(r_bits.clone(), self.acc.0.comm_w, self.last.0.comm_w),
-                CycleFoldCircuit::<G1>::new(r_bits, self.acc.0.comm_e, comm_t),
+                CycleFoldCircuit::<G1>::new(t_bits.clone(), self.acc.0.comm_w, self.last.0.comm_w),
+                CycleFoldCircuit::<G1>::new(t_bits, self.acc.0.comm_e, comm_t),
             ];
             debug_assert_eq!(delegated[0].output(), acc_u.comm_w);
             debug_assert_eq!(delegated[1].output(), acc_u.comm_e);
@@ -337,7 +336,7 @@ where
                 absorb_cf_fresh(&mut input, &fresh);
                 absorb_rows(&mut input, &comm_t);
                 sponge.absorb(&input);
-                let r: G2::ScalarField = bits_to_field(&squeeze_challenge(&mut sponge));
+                let r: G2::ScalarField = odd_scalar(&squeeze_challenge(&mut sponge));
 
                 cf_u = cf_fold_instance(&cf_u, &fresh, &comm_t, r);
                 cf_w = cf_fold_witness(&cf_w, &w, &t, r);

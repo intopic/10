@@ -22,16 +22,28 @@
 //!    non-natively modulo `|G2|`);
 //! 5. `z_{i+1} = F(z_i)` and the single public input
 //!    `x = H(vk, i + 1, z_0, z_{i+1}, U', U_cf')`.
+//!
+//! Every challenge has the shape `r = 2^128 + 2t + 1` for a squeezed 127-bit
+//! `t` (see [`crate::gadgets::ec`]). Hashing uses the low-weight
+//! [`PoseidonVar`] and the curve arithmetic the low-weight affine gadgets, so
+//! the matrices stay sparse.
 
 use super::{
     circuit::{CycleFoldCircuit, CF_IO_LEN},
     hyrax::{CfInstance, CfRelaxedInstance},
+    T_BITS,
 };
-use crate::{nonnative::mul_add_mod, nova_ivc_circuit::StepCircuit};
+use crate::{
+    gadgets::{
+        ec::{add_scalar_mul, odd_scalar_bits, odd_scalar_var, AffineVar},
+        poseidon::PoseidonVar,
+    },
+    nonnative::mul_add_mod,
+    nova_ivc_circuit::StepCircuit,
+};
 use alloc::vec::Vec;
 use ark_crypto_primitives::sponge::{
-    constraints::CryptographicSpongeVar,
-    poseidon::{constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge},
+    poseidon::{PoseidonConfig, PoseidonSponge},
     Absorb, CryptographicSponge,
 };
 use ark_ec::{
@@ -44,12 +56,11 @@ use ark_r1cs_std::{
     boolean::Boolean,
     eq::EqGadget,
     fields::{fp::FpVar, FieldVar},
-    groups::{curves::short_weierstrass::ProjectiveVar, CurveVar},
     R1CSVar,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use core_r1cs::{R1CSInstance, RelaxedR1CSInstance};
-use llull_folder::transcript::{point_to_coords, scalar_to_limbs, CHALLENGE_BITS, LIMB_BITS};
+use llull_folder::transcript::{point_to_coords, scalar_to_limbs, LIMB_BITS};
 
 /// Domain separator of the CycleFold IVC state hash.
 pub const DOMAIN_CF_STATE: u64 = 16;
@@ -198,16 +209,28 @@ where
     input
 }
 
-/// Squeezes a `CHALLENGE_BITS`-bit challenge from a native sponge.
+/// Squeezes the `T_BITS` bits of `t` of a challenge `r = 2^128 + 2t + 1`.
 pub fn squeeze_challenge<F: PrimeField + Absorb>(sponge: &mut PoseidonSponge<F>) -> Vec<bool> {
-    sponge.squeeze_bits(CHALLENGE_BITS)
+    sponge.squeeze_bits(T_BITS)
 }
 
 // ---------------------------------------------------------------------------
 // The circuit.
 // ---------------------------------------------------------------------------
 
-type NativePoint<G2> = ProjectiveVar<G2, FpVar<<G2 as CurveConfig>::BaseField>>;
+/// A fresh witness equal to `v`: one constraint, after which every use of
+/// `v` costs one matrix entry instead of the length of its combination.
+fn flat<F: PrimeField>(
+    cs: &ConstraintSystemRef<F>,
+    v: FpVar<F>,
+) -> Result<FpVar<F>, SynthesisError> {
+    if v.is_constant() {
+        return Ok(v);
+    }
+    let w = FpVar::new_witness(cs.clone(), || v.value())?;
+    w.enforce_equal(&v)?;
+    Ok(w)
+}
 
 /// A foreign field element (a coordinate of `G1`, or a scalar of `G2`) as
 /// little-endian bits in the native field.
@@ -221,31 +244,48 @@ fn foreign_bits<F: PrimeField, S: PrimeField>(
         .collect()
 }
 
-/// `count` little-endian `LIMB_BITS`-bit limbs, zero-padded; matches
-/// [`scalar_to_limbs`] for `count = ⌈bits(S) / LIMB_BITS⌉`.
-fn limbs<F: PrimeField>(
+/// The `⌈bits(S) / LIMB_BITS⌉` little-endian limbs of a foreign value,
+/// zero-padded and flattened; matches [`scalar_to_limbs`].
+fn foreign_limbs<F: PrimeField, S: PrimeField>(
+    cs: &ConstraintSystemRef<F>,
     bits: &[Boolean<F>],
-    count: usize,
 ) -> Result<Vec<FpVar<F>>, SynthesisError> {
+    let count = (S::MODULUS_BIT_SIZE as usize).div_ceil(LIMB_BITS);
     let mut out: Vec<FpVar<F>> = bits
         .chunks(LIMB_BITS)
-        .map(Boolean::le_bits_to_fp)
+        .map(|chunk| flat(cs, Boolean::le_bits_to_fp(chunk)?))
         .collect::<Result<_, _>>()?;
     assert!(out.len() <= count, "too many limbs");
     out.resize(count, FpVar::zero());
     Ok(out)
 }
 
-fn foreign_limbs<F: PrimeField, S: PrimeField>(
-    bits: &[Boolean<F>],
-) -> Result<Vec<FpVar<F>>, SynthesisError> {
-    limbs(bits, (S::MODULUS_BIT_SIZE as usize).div_ceil(LIMB_BITS))
+/// A foreign value: its bits (for non-native arithmetic) and its limbs (for
+/// hashing), computed once.
+#[derive(Clone)]
+struct Foreign<F: PrimeField> {
+    bits: Vec<Boolean<F>>,
+    limbs: Vec<FpVar<F>>,
+}
+
+impl<F: PrimeField> Foreign<F> {
+    fn from_bits<S: PrimeField>(
+        cs: &ConstraintSystemRef<F>,
+        bits: Vec<Boolean<F>>,
+    ) -> Result<Self, SynthesisError> {
+        let limbs = foreign_limbs::<F, S>(cs, &bits)?;
+        Ok(Self { bits, limbs })
+    }
+
+    fn new<S: PrimeField>(cs: &ConstraintSystemRef<F>, v: &S) -> Result<Self, SynthesisError> {
+        Self::from_bits::<S>(cs, foreign_bits(cs, v)?)
+    }
 }
 
 /// A point of `G1` with foreign coordinates, `(0, 0)` for the identity.
 struct ForeignPoint<F: PrimeField> {
-    x: Vec<Boolean<F>>,
-    y: Vec<Boolean<F>>,
+    x: Foreign<F>,
+    y: Foreign<F>,
 }
 
 impl<F: PrimeField> ForeignPoint<F> {
@@ -258,77 +298,52 @@ impl<F: PrimeField> ForeignPoint<F> {
     {
         let [x, y] = point_to_coords(p);
         Ok(Self {
-            x: foreign_bits(cs, &x)?,
-            y: foreign_bits(cs, &y)?,
+            x: Foreign::new(cs, &x)?,
+            y: Foreign::new(cs, &y)?,
         })
     }
 
-    fn limbs<S: PrimeField>(&self) -> Result<Vec<FpVar<F>>, SynthesisError> {
-        let mut out = foreign_limbs::<F, S>(&self.x)?;
-        out.extend(foreign_limbs::<F, S>(&self.y)?);
-        Ok(out)
+    fn limbs(&self) -> Vec<FpVar<F>> {
+        let mut out = self.x.limbs.clone();
+        out.extend_from_slice(&self.y.limbs);
+        out
     }
 }
 
-fn coords<G2: SWCurveConfig>(
-    p: &NativePoint<G2>,
-) -> Result<[FpVar<G2::BaseField>; 2], SynthesisError>
-where
-    G2::BaseField: PrimeField,
-{
-    let affine = p.to_affine()?;
-    Ok([affine.x, affine.y])
-}
-
-fn rows_coords<G2: SWCurveConfig>(
-    rows: &[NativePoint<G2>],
-) -> Result<Vec<FpVar<G2::BaseField>>, SynthesisError>
-where
-    G2::BaseField: PrimeField,
-{
-    let mut out = Vec::with_capacity(2 * rows.len());
-    for p in rows {
-        out.extend(coords::<G2>(p)?);
-    }
-    Ok(out)
+fn rows_coords<F: PrimeField>(rows: &[AffineVar<F>]) -> Vec<FpVar<F>> {
+    rows.iter().flat_map(|p| p.coords()).collect()
 }
 
 fn alloc_rows<G2: SWCurveConfig>(
     cs: &ConstraintSystemRef<G2::BaseField>,
     rows: &[Projective<G2>],
-) -> Result<Vec<NativePoint<G2>>, SynthesisError>
+) -> Result<Vec<AffineVar<G2::BaseField>>, SynthesisError>
 where
     G2::BaseField: PrimeField,
 {
     rows.iter()
-        .map(|p| NativePoint::<G2>::new_witness(cs.clone(), || Ok(*p)))
+        .map(|p| AffineVar::new_witness::<G2>(cs, p))
         .collect()
 }
 
 /// The CycleFold accumulator inside the circuit.
-struct CfAccVar<G2: SWCurveConfig>
-where
-    G2::BaseField: PrimeField,
-{
-    comm_w: Vec<NativePoint<G2>>,
-    comm_e: Vec<NativePoint<G2>>,
-    u: Vec<Boolean<G2::BaseField>>,
-    x: Vec<Vec<Boolean<G2::BaseField>>>,
+struct CfAccVar<F: PrimeField> {
+    comm_w: Vec<AffineVar<F>>,
+    comm_e: Vec<AffineVar<F>>,
+    u: Foreign<F>,
+    x: Vec<Foreign<F>>,
 }
 
-impl<G2: SWCurveConfig> CfAccVar<G2>
-where
-    G2::BaseField: PrimeField,
-{
+impl<F: PrimeField> CfAccVar<F> {
     /// The same field elements as [`absorb_cf_acc`].
-    fn elems(&self) -> Result<Vec<FpVar<G2::BaseField>>, SynthesisError> {
-        let mut out = rows_coords::<G2>(&self.comm_w)?;
-        out.extend(rows_coords::<G2>(&self.comm_e)?);
-        out.extend(foreign_limbs::<_, G2::ScalarField>(&self.u)?);
+    fn elems(&self) -> Vec<FpVar<F>> {
+        let mut out = rows_coords(&self.comm_w);
+        out.extend(rows_coords(&self.comm_e));
+        out.extend_from_slice(&self.u.limbs);
         for xi in &self.x {
-            out.extend(foreign_limbs::<_, G2::ScalarField>(xi)?);
+            out.extend_from_slice(&xi.limbs);
         }
-        Ok(out)
+        out
     }
 }
 
@@ -363,12 +378,12 @@ where
     G2::BaseField: PrimeField + Absorb,
     SC: StepCircuit<G1::ScalarField>,
 {
-    /// The CycleFold statements this step delegates, given the primary
-    /// challenge `r`: `W' = W + r·W_new` and `E' = E + r·T`.
-    pub fn delegated(&self, r_bits: &[bool]) -> [CycleFoldCircuit<G1>; 2] {
+    /// The CycleFold statements this step delegates, given the bits of the
+    /// primary challenge's `t`: `W' = W + r·W_new` and `E' = E + r·T`.
+    pub fn delegated(&self, t_bits: &[bool]) -> [CycleFoldCircuit<G1>; 2] {
         [
-            CycleFoldCircuit::new(r_bits.to_vec(), self.acc.comm_w, self.fresh.comm_w),
-            CycleFoldCircuit::new(r_bits.to_vec(), self.acc.comm_e, self.comm_t),
+            CycleFoldCircuit::new(t_bits.to_vec(), self.acc.comm_w, self.fresh.comm_w),
+            CycleFoldCircuit::new(t_bits.to_vec(), self.acc.comm_e, self.comm_t),
         ]
     }
 
@@ -403,36 +418,37 @@ where
         let fresh_x = Fp::<G2>::new_witness(cs.clone(), || Ok(self.fresh.x[0]))?;
         let comm_t = ForeignPoint::new(&cs, &self.comm_t)?;
 
-        let cf_acc = CfAccVar::<G2> {
-            comm_w: alloc_rows(&cs, &self.cf_acc.comm_w)?,
-            comm_e: alloc_rows(&cs, &self.cf_acc.comm_e)?,
-            u: foreign_bits(&cs, &self.cf_acc.u)?,
+        let cf_acc = CfAccVar {
+            comm_w: alloc_rows::<G2>(&cs, &self.cf_acc.comm_w)?,
+            comm_e: alloc_rows::<G2>(&cs, &self.cf_acc.comm_e)?,
+            u: Foreign::new(&cs, &self.cf_acc.u)?,
             x: self
                 .cf_acc
                 .x
                 .iter()
-                .map(|xi| foreign_bits(&cs, xi))
+                .map(|xi| Foreign::new(&cs, xi))
                 .collect::<Result<_, _>>()?,
         };
         let cf_new = self
             .cf
             .iter()
-            .map(|a| Ok((alloc_rows(&cs, &a.comm_w)?, alloc_rows(&cs, &a.comm_t)?)))
+            .map(|a| {
+                Ok((
+                    alloc_rows::<G2>(&cs, &a.comm_w)?,
+                    alloc_rows::<G2>(&cs, &a.comm_t)?,
+                ))
+            })
             .collect::<Result<Vec<_>, SynthesisError>>()?;
 
-        let primary_elems = |w: &ForeignPoint<_>,
-                             e: &ForeignPoint<_>,
-                             u: &Fp<G2>,
-                             x: &Fp<G2>|
-         -> Result<Vec<Fp<G2>>, SynthesisError> {
-            let mut out = w.limbs::<G1::BaseField>()?;
-            out.extend(e.limbs::<G1::BaseField>()?);
+        let primary_elems = |w: &ForeignPoint<_>, e: &ForeignPoint<_>, u: &Fp<G2>, x: &Fp<G2>| {
+            let mut out = w.limbs();
+            out.extend(e.limbs());
             out.push(u.clone());
             out.push(x.clone());
-            Ok(out)
+            out
         };
-        let acc_elems = primary_elems(&acc_w, &acc_e, &acc_u, &acc_x)?;
-        let cf_elems = cf_acc.elems()?;
+        let acc_elems = primary_elems(&acc_w, &acc_e, &acc_u, &acc_x);
+        let cf_elems = cf_acc.elems();
 
         // ---- Base case: default accumulators, z_i = z_0 ---------------------
         let is_base = i.is_zero()?;
@@ -459,40 +475,40 @@ where
             input.extend_from_slice(z);
             input.extend_from_slice(acc);
             input.extend_from_slice(cf);
-            let mut sponge = PoseidonSpongeVar::new(cs.clone(), self.poseidon);
+            let mut sponge = PoseidonVar::new(cs.clone(), self.poseidon);
             sponge.absorb(&input)?;
             Ok(sponge.squeeze_field_elements(1)?.remove(0))
         };
         hash(&i, &zi, &acc_elems, &cf_elems)?.conditional_enforce_equal(&fresh_x, &!&is_base)?;
 
         // ---- Primary fold: r, then u and x natively ---------------------------
-        let mut transcript = PoseidonSpongeVar::new(cs.clone(), self.poseidon);
+        let mut transcript = PoseidonVar::new(cs.clone(), self.poseidon);
         let mut input = alloc::vec![
             Fp::<G2>::constant(G1::ScalarField::from(DOMAIN_CF_STEP)),
             digest.clone()
         ];
         input.extend_from_slice(&acc_elems);
-        input.extend(fresh_w.limbs::<G1::BaseField>()?);
+        input.extend(fresh_w.limbs());
         input.push(fresh_x.clone());
-        input.extend(comm_t.limbs::<G1::BaseField>()?);
+        input.extend(comm_t.limbs());
         transcript.absorb(&input)?;
-        let r = transcript.squeeze_bits(CHALLENGE_BITS)?;
-        let r_native = Boolean::le_bits_to_fp(&r)?;
+        let t = transcript.squeeze_bits(T_BITS)?;
+        let r_native = odd_scalar_var(&t)?;
         let folded_u = &acc_u + &r_native;
         let folded_x = &acc_x + &r_native * &fresh_x;
 
         // The folded commitments are advice: only the CycleFold instances
         // below, once their accumulator is decided, pin them down.
-        let r_value: Result<Vec<bool>, _> = r.iter().map(|b| b.value()).collect();
-        let delegated =
-            self.delegated(&r_value.unwrap_or_else(|_| alloc::vec![false; CHALLENGE_BITS]));
+        let t_value: Result<Vec<bool>, _> = t.iter().map(|b| b.value()).collect();
+        let delegated = self.delegated(&t_value.unwrap_or_else(|_| alloc::vec![false; T_BITS]));
         let folded_w = ForeignPoint::new(&cs, &delegated[0].output())?;
         let folded_e = ForeignPoint::new(&cs, &delegated[1].output())?;
 
         // Public inputs of the two CycleFold instances: (r, p1, p2, out).
+        let r_foreign = Foreign::from_bits::<G1::BaseField>(&cs, odd_scalar_bits(&t))?;
         let cf_io = |p1: &ForeignPoint<_>, p2: &ForeignPoint<_>, out: &ForeignPoint<_>| {
             alloc::vec![
-                r.clone(),
+                r_foreign.clone(),
                 p1.x.clone(),
                 p1.y.clone(),
                 p2.x.clone(),
@@ -510,29 +526,32 @@ where
         transcript.absorb(&cf_elems)?;
         let mut acc = cf_acc;
         for ((w_rows, t_rows), io) in cf_new.iter().zip(&cf_inputs) {
-            let mut input = rows_coords::<G2>(w_rows)?;
+            let mut input = rows_coords(w_rows);
             for xi in io {
-                input.extend(foreign_limbs::<_, G2::ScalarField>(xi)?);
+                input.extend_from_slice(&xi.limbs);
             }
-            input.extend(rows_coords::<G2>(t_rows)?);
+            input.extend(rows_coords(t_rows));
             transcript.absorb(&input)?;
-            let r_k = transcript.squeeze_bits(CHALLENGE_BITS)?;
+            let t_k = transcript.squeeze_bits(T_BITS)?;
+            let r_k = odd_scalar_bits(&t_k);
 
             for (a, b) in acc.comm_w.iter_mut().zip(w_rows) {
-                *a = &*a + b.scalar_mul_le(r_k.iter())?;
+                *a = add_scalar_mul::<G2>(&cs, a, b, &t_k)?;
             }
-            for (a, t) in acc.comm_e.iter_mut().zip(t_rows) {
-                *a = &*a + t.scalar_mul_le(r_k.iter())?;
+            for (a, b) in acc.comm_e.iter_mut().zip(t_rows) {
+                *a = add_scalar_mul::<G2>(&cs, a, b, &t_k)?;
             }
-            acc.u = mul_add_mod::<_, G2::ScalarField>(&cs, &acc.u, &r_k, &[Boolean::TRUE])?;
+            let u = mul_add_mod::<_, G2::ScalarField>(&cs, &acc.u.bits, &r_k, &[Boolean::TRUE])?;
+            acc.u = Foreign::from_bits::<G2::ScalarField>(&cs, u)?;
             for (a, xi) in acc.x.iter_mut().zip(io) {
-                *a = mul_add_mod::<_, G2::ScalarField>(&cs, a, &r_k, xi)?;
+                let x = mul_add_mod::<_, G2::ScalarField>(&cs, &a.bits, &r_k, &xi.bits)?;
+                *a = Foreign::from_bits::<G2::ScalarField>(&cs, x)?;
             }
         }
 
         // ---- New accumulators (unchanged defaults in the base case) ----------
-        let folded_elems = primary_elems(&folded_w, &folded_e, &folded_u, &folded_x)?;
-        let folded_cf_elems = acc.elems()?;
+        let folded_elems = primary_elems(&folded_w, &folded_e, &folded_u, &folded_x);
+        let folded_cf_elems = acc.elems();
         let keep_default = |elems: Vec<Fp<G2>>| -> Result<Vec<Fp<G2>>, SynthesisError> {
             elems.iter().map(|e| is_base.select(&zero, e)).collect()
         };
@@ -551,7 +570,8 @@ where
     }
 }
 
-/// The primary challenge `r` as bits, from the native transcript prefix.
+/// The bits of `t` of the primary challenge `r = 2^128 + 2t + 1`, from the
+/// native transcript prefix.
 pub fn primary_challenge<G1: SWCurveConfig>(
     sponge: &mut PoseidonSponge<G1::ScalarField>,
     digest: G1::ScalarField,

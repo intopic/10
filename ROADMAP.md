@@ -113,7 +113,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       `M`) + një qark mbyllës BN254 i vendosur me `finalizeUniversal`.
   - [x] **Hapi 1 — qarku CycleFold** (`zeno-ivc::cyclefold::circuit`): `out = p1 + [r]·p2` mbi fushën
         bazë të BN254, hyrje publike `(r, p1, p2, out)`, identiteti si `(0, 0)`, kontroll që pikat janë
-        në kurbë: **1 344 kufizime, 1 339 variabla**. Teste: identiteti në çdo pozicion, dyfishim në
+        në kurbë: **936 kufizime** (1 344 me gadget-et e arkworks). Teste: identiteti në çdo pozicion, dyfishim në
         mbledhjen e fundit, dalje e falsifikuar, pika jashtë kurbës, çdo hyrje publike e lidhur
   - [x] **Hapi 2 — stepper-i CycleFold** (`cyclefold::{augmented, ivc, hyrax}`): qarku primar palos
         `u` dhe `x` të instancës BN254 në mënyrë native dhe ia delegon `W' = W + r·W_new` dhe
@@ -124,19 +124,31 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
         akumulatorëve, dhe një palosje e deleguar e gabuar që e bën akumulatorin të pakënaqshëm
   - [x] `mul_add_mod` zgjedh vetë numrin e limbeve (2 → 3) kur operandi është një koordinatë e plotë
         254-bitëshe; për përdorimet ekzistuese kufizimet mbeten të njëjta (test mutacioni për të dyja)
-  - Kompromisi i Hyrax-it, i matur (C kolona; rreshta = ⌈1 344 / C⌉ për `W` dhe për `E`; qarku
-    primar me hap aplikacioni minimal):
+  - [x] **Gadget-e me peshë të ulët** (`zeno-ivc::gadgets`), ku çdo ndërmjetës është variabël:
+    - `ec`: pika afine (identiteti `(0, 0)`, kodim unik), mbledhje e plotë (~20 kufizime, çdo rast:
+      identitet, të barabarta, të kundërta, `x = 0`) dhe `A + [r]·B` me dyfishim-e-mbledhje
+      Eisenträger–Lauter–Montgomery dhe shifra ±1. Sfidat kanë formën `r = 2^128 + 2t + 1` me `t`
+      127-bitësh: çdo shumëfish i ndërmjetëm është `[k]B` me `k` tek dhe `3 ≤ k < 2^129`, prandaj
+      formulat jo të plota nuk kanë **asnjë** rast përjashtimor për asnjë provues (jo vetëm me
+      probabilitet të vogël). `A + [r]·B`: **933 kufizime / 4.2k elemente jo-zero** kundrejt
+      1 329 / 70.4k me arkworks. Teste: çdo kombinim rastesh, krahasim me aritmetikën native,
+      mutacion (asnjë dëshmi e lirë)
+    - `poseidon`: i njëjti funksion si `PoseidonSponge` native i arkworks (testuar në çdo radhë
+      thithje/shtrydhje), me gjendjen të rialokuar çdo 8 ronde të pjesshme: **2.6× më pak elemente
+      jo-zero** për 13% më shumë kufizime
+  - Kompromisi i Hyrax-it, i matur (C kolona; qarku CycleFold tani **936 kufizime**, rreshta =
+    ⌈936 / C⌉ për `W` dhe për `E`; qarku primar me hap aplikacioni minimal):
 
-    | C | rreshta W/E | kufizime për hap | elemente jo-zero |
-    |---|---|---|---|
-    | 2048 (Pedersen i zakonshëm) | 1/1 | 32 414 | 0.74 M |
-    | 512 | 3/3 | 45 074 | 1.39 M |
-    | 256 | 6/6 | 64 064 | 2.36 M |
-    | 128 | 11/11 | 95 714 | 3.97 M |
-    | 64 | 21/21 | 159 014 | 7.21 M |
+    | C | rreshta W/E | kufizime për hap | elemente jo-zero | para gadget-eve |
+    |---|---|---|---|---|
+    | 1024 (Pedersen i zakonshëm) | 1/1 | 32 400 | 0.24 M | 38 744 / 1.07 M |
+    | 512 | 2/2 | 37 313 | 0.28 M | 45 074 / 1.39 M |
+    | 256 | 4/4 | 47 139 | 0.34 M | 64 064 / 2.36 M |
+    | **128 (zgjedhja)** | **8/8** | **66 791** | **0.47 M** | 95 714 / 3.97 M |
+    | 64 | 15/15 | 101 182 | 0.69 M | 159 014 / 7.21 M |
 
-    Çdo rresht shton ~3.2k kufizime në **çdo hap** (dy shumëzime skalare Grumpkin dhe hash-et).
-    Krahasim: Nova 2-kurbëshe aktuale kushton ~11.2k (primar) + ~11.2k (sekondar) për hap.
+    Çdo rresht shton ~2.5k kufizime në çdo hap. Akumulatori primar me C = 128 vendoset me
+    `finalizeUniversal` mbi `.ptau` 2^20 (max(m, 2n, jo-zero) ≈ 2^19 për një hap aplikacioni të vogël)
   - [ ] **Hapi 3 — qarku mbyllës.** Plani, i korrigjuar pas matjeve:
     - Hyrax jep vetëm *vlerësime* `W̃(r_y)`, `Ẽ(r_x)`. Që akumulatori CycleFold është i kënaqshëm
       vërtetohet me një sum-check (stil Spartan) mbi `Fq`, që është jo-native në BN254. Sum-check-u
@@ -152,14 +164,10 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       2^18 mban qarqe deri në ~2^16 kufizime vetëm nëse matricat janë të rralla. Gadget-et e
       arkworks futen të plota në kombinime lineare (deri në ~56 elemente për kufizim te shuma e
       pikave; ~23 te qarku primar, kryesisht Poseidon dhe paketimi i biteve)
-    - parakusht për hapin 3: **gadget-e me peshë të ulët** për Grumpkin (formula afine me çdo
-      ndërmjetës si variabël, MSM me bazë fikse me dritare 2-bitëshe, MSM me dyfishim të
-      përbashkët) dhe rrafshim i Poseidon-it. Vlerësim pas tyre: ~140k kufizime, ~0.7 M elemente
-      jo-zero → `.ptau` 2^20 (skedar publik PPoT, ~1.2 GB)
-    - alternativë që mban `.ptau` 2^18: qarku mbyllës ndahet në copa identike ≤ 2^16 kufizime
-      (secila shton një pjesë të MSM-së te një akumulator pikash në hyrjet publike), të cilat
-      kontrata i palos me mënyrën B ekzistuese (~23–74k gas për copë) dhe i vendos një herë me
-      `finalizeUniversal`
+    - vendim: C = 128 (8 + 8 rreshta), `.ptau` 2^20 në CI me `actions/cache`, një provë e vetme
+      për `finalizeUniversal`. Mbetet: MSM me bazë fikse (128 baza) dhe MSM me dyfishim të
+      përbashkët (16 rreshta) me peshë të ulët, qarku mbyllës dhe matja e tij (synimi ~140k
+      kufizime, ~0.7 M elemente jo-zero)
   - [ ] Hapi 4 — kontrata (`finalizeRecursive`), test në EVM lokale dhe matja e gazit
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧

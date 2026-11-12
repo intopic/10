@@ -54,10 +54,11 @@ where
 
 #[test]
 fn cyclefold_ivc_bn254_grumpkin() {
-    let (params, acc) = run::<Bn254, Grumpkin>(5, 512);
+    let (params, acc) = run::<Bn254, Grumpkin>(5, zeno_ivc::cyclefold::CF_COLUMNS);
+    assert_eq!(params.cf_rows(), (8, 8));
     let (rows_w, rows_e) = params.cf_rows();
     println!(
-        "BN254/Grumpkin, 512 columns: primary {} constraints; CycleFold {} constraints, {} + {} rows",
+        "BN254/Grumpkin, 128 columns: primary {} constraints; CycleFold {} constraints, {} + {} rows",
         params.shape.num_constraints, params.cf_shape.num_constraints, rows_w, rows_e
     );
     // Both CycleFold folds per step were really accumulated: u = Σ r_k ≠ 0.
@@ -144,7 +145,9 @@ fn a_wrong_delegated_fold_poisons_the_cyclefold_accumulator() {
     let (_, cf_shape, cf_key) =
         CycleFoldParams::<Bn254, Grumpkin>::shapes(&step, b"test", 256).unwrap();
     let statement = CycleFoldCircuit::<Bn254>::new(
-        (0..128).map(|_| bool::rand(&mut rng)).collect(),
+        (0..zeno_ivc::cyclefold::T_BITS)
+            .map(|_| bool::rand(&mut rng))
+            .collect(),
         Projective::rand(&mut rng),
         Projective::rand(&mut rng),
     );
@@ -187,6 +190,7 @@ fn circuit_size_against_columns() {
     // every step. Printed for the record; asserted to be monotone.
     let step = CubicStep { rounds: 1 };
     let mut last = usize::MAX;
+    let mut at_128 = (0, 0);
     for cols in [64, 128, 256, 512, 1024, 2048] {
         let (shape, cf_shape, cf_key) =
             CycleFoldParams::<Bn254, Grumpkin>::shapes(&step, b"size", cols).unwrap();
@@ -199,7 +203,14 @@ fn circuit_size_against_columns() {
             "cols {cols:>4}: rows W/E {:>2}/{:>2}, primary circuit {:>6} constraints, {:>6} variables, {:>7} non-zero entries",
             rows.0, rows.1, shape.num_constraints, shape.num_vars, nnz
         );
-        assert!(shape.num_constraints < last);
+        assert!(shape.num_constraints <= last);
         last = shape.num_constraints;
+        if cols == 128 {
+            at_128 = (shape.num_constraints, nnz);
+        }
     }
+    // With the low-weight gadgets (measured: 66 791 constraints and 468 322
+    // non-zero entries at 128 columns, against 95 714 / 3.97 M with the
+    // arkworks gadgets).
+    assert!(at_128.0 < 70_000 && at_128.1 < 500_000, "{at_128:?}");
 }

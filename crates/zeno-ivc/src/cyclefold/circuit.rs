@@ -5,13 +5,16 @@
 //! addition
 //!
 //! ```text
-//! out = p1 + [r]·p2,   r < 2^128.
+//! out = p1 + [r]·p2,   r = 2^128 + 2t + 1 for a 127-bit t.
 //! ```
 //!
 //! The primary circuit folds its own commitments (points of `P`, whose
 //! coordinates are foreign there) by delegating exactly this operation to
 //! instances of this circuit, which are accumulated on the other curve of the
-//! cycle. Its public input, in this order, is
+//! cycle. The scalar shape is that of every folding challenge of the
+//! CycleFold IVC: it lets the low-weight gadgets of [`crate::gadgets::ec`] use
+//! incomplete formulas that no prover can push into an exceptional case. Its
+//! public input, in this order, is
 //!
 //! ```text
 //! x = (r, p1.x, p1.y, p2.x, p2.y, out.x, out.y)
@@ -21,30 +24,23 @@
 //! `b ≠ 0`. Input points are checked to lie on the curve (the primary curves
 //! used here have prime order, so that is also the subgroup check).
 
+use super::T_BITS;
+use crate::gadgets::ec::{add_scalar_mul, odd_scalar, odd_scalar_var, AffineVar};
 use alloc::vec::Vec;
 use ark_ec::short_weierstrass::{Projective, SWCurveConfig};
 use ark_ff::{PrimeField, Zero};
-use ark_r1cs_std::{
-    alloc::AllocVar,
-    boolean::Boolean,
-    eq::EqGadget,
-    fields::{fp::FpVar, FieldVar},
-    groups::{curves::short_weierstrass::ProjectiveVar, CurveVar},
-    R1CSVar,
-};
+use ark_r1cs_std::{alloc::AllocVar, boolean::Boolean, eq::EqGadget, fields::fp::FpVar, R1CSVar};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
-use llull_folder::transcript::{bits_to_field, point_to_coords, CHALLENGE_BITS};
+use llull_folder::transcript::point_to_coords;
 
 /// Length of the public input `x`.
 pub const CF_IO_LEN: usize = 7;
 
-type PointVar<P> = ProjectiveVar<P, FpVar<<P as ark_ec::CurveConfig>::BaseField>>;
-
 /// One CycleFold statement `out = p1 + [r]·p2`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CycleFoldCircuit<P: SWCurveConfig> {
-    /// The scalar `r`, as `CHALLENGE_BITS` little-endian bits.
-    pub r_bits: Vec<bool>,
+    /// The `T_BITS` little-endian bits of `t`, with `r = 2^128 + 2t + 1`.
+    pub t_bits: Vec<bool>,
     pub p1: Projective<P>,
     pub p2: Projective<P>,
 }
@@ -53,15 +49,16 @@ impl<P: SWCurveConfig> CycleFoldCircuit<P>
 where
     P::BaseField: PrimeField,
 {
-    pub fn new(r_bits: Vec<bool>, p1: Projective<P>, p2: Projective<P>) -> Self {
-        assert_eq!(r_bits.len(), CHALLENGE_BITS, "r must have 128 bits");
-        Self { r_bits, p1, p2 }
+    pub fn new(t_bits: Vec<bool>, p1: Projective<P>, p2: Projective<P>) -> Self {
+        assert_eq!(t_bits.len(), T_BITS, "t must have 127 bits");
+        Self { t_bits, p1, p2 }
     }
 
-    /// The all-zero statement `0 = 0 + [0]·0`, used where a step has no fold.
+    /// The statement `0 = 0 + [r]·0` with `t = 0`, used where a step has no
+    /// fold (and to extract the shape).
     pub fn placeholder() -> Self {
         Self::new(
-            alloc::vec![false; CHALLENGE_BITS],
+            alloc::vec![false; T_BITS],
             Projective::zero(),
             Projective::zero(),
         )
@@ -69,7 +66,7 @@ where
 
     /// `r` as a scalar of `P`.
     pub fn r(&self) -> P::ScalarField {
-        bits_to_field(&self.r_bits)
+        odd_scalar(&self.t_bits)
     }
 
     /// `p1 + [r]·p2`, computed natively.
@@ -80,7 +77,7 @@ where
     /// The public input `x` of an honest instance.
     pub fn io(&self) -> Vec<P::BaseField> {
         let mut x = Vec::with_capacity(CF_IO_LEN);
-        x.push(bits_to_field::<P::BaseField>(&self.r_bits));
+        x.push(odd_scalar::<P::BaseField>(&self.t_bits));
         x.extend(point_to_coords(&self.p1));
         x.extend(point_to_coords(&self.p2));
         x.extend(point_to_coords(&self.output()));
@@ -91,7 +88,7 @@ where
     pub fn synthesize(&self, cs: ConstraintSystemRef<P::BaseField>) -> Result<(), SynthesisError> {
         synthesize_coords::<P>(
             cs,
-            &self.r_bits,
+            &self.t_bits,
             point_to_coords(&self.p1),
             point_to_coords(&self.p2),
         )
@@ -103,61 +100,29 @@ where
 /// from the circuit's own computation; for valid points it is `p1 + [r]·p2`.
 fn synthesize_coords<P: SWCurveConfig>(
     cs: ConstraintSystemRef<P::BaseField>,
-    r_bits: &[bool],
+    t_bits: &[bool],
     p1: [P::BaseField; 2],
     p2: [P::BaseField; 2],
 ) -> Result<(), SynthesisError>
 where
     P::BaseField: PrimeField,
 {
-    assert!(
-        !P::COEFF_B.is_zero(),
-        "(0, 0) encodes the identity only when b ≠ 0"
-    );
-    let r_in = FpVar::new_input(cs.clone(), || Ok(bits_to_field::<P::BaseField>(r_bits)))?;
-    let p1 = io_point::<P>(&cs, p1)?;
-    let p2 = io_point::<P>(&cs, p2)?;
+    let r_in = FpVar::new_input(cs.clone(), || Ok(odd_scalar::<P::BaseField>(t_bits)))?;
+    let p1 = AffineVar::new_input::<P>(&cs, p1)?;
+    let p2 = AffineVar::new_input::<P>(&cs, p2)?;
 
-    let bits = r_bits
+    let t = t_bits
         .iter()
         .map(|b| Boolean::new_witness(cs.clone(), || Ok(*b)))
         .collect::<Result<Vec<_>, _>>()?;
-    Boolean::le_bits_to_fp(&bits)?.enforce_equal(&r_in)?;
+    odd_scalar_var(&t)?.enforce_equal(&r_in)?;
 
-    let out = (p1 + p2.scalar_mul_le(bits.iter())?).to_affine()?;
+    let out = add_scalar_mul::<P>(&cs, &p1, &p2, &t)?;
     let out_x = FpVar::new_input(cs.clone(), || out.x.value())?;
     let out_y = FpVar::new_input(cs.clone(), || out.y.value())?;
     out.x.enforce_equal(&out_x)?;
     out.y.enforce_equal(&out_y)?;
     Ok(())
-}
-
-/// Allocates a point given as public affine coordinates, `(0, 0)` being the
-/// identity, and enforces the curve equation for every other value.
-fn io_point<P: SWCurveConfig>(
-    cs: &ConstraintSystemRef<P::BaseField>,
-    coords: [P::BaseField; 2],
-) -> Result<PointVar<P>, SynthesisError>
-where
-    P::BaseField: PrimeField,
-{
-    let x = FpVar::new_input(cs.clone(), || Ok(coords[0]))?;
-    let y = FpVar::new_input(cs.clone(), || Ok(coords[1]))?;
-    let is_identity = &x.is_zero()? & &y.is_zero()?;
-
-    // y² = x³ + a·x + b unless the point is the identity.
-    let rhs = x.square()? * &x + &x * P::COEFF_A + FpVar::constant(P::COEFF_B);
-    y.square()?
-        .conditional_enforce_equal(&rhs, &!&is_identity)?;
-
-    // Projective coordinates; the identity is (0 : 1 : 0).
-    let zero = FpVar::zero();
-    let one = FpVar::one();
-    Ok(ProjectiveVar::new(
-        is_identity.select(&zero, &x)?,
-        is_identity.select(&one, &y)?,
-        is_identity.select(&zero, &one)?,
-    ))
 }
 
 #[cfg(test)]
@@ -198,7 +163,7 @@ mod tests {
     }
 
     fn random_bits(rng: &mut impl ark_std::rand::RngCore) -> Vec<bool> {
-        (0..CHALLENGE_BITS).map(|_| bool::rand(rng)).collect()
+        (0..T_BITS).map(|_| bool::rand(rng)).collect()
     }
 
     fn statements<P: SWCurveConfig>() -> Vec<CycleFoldCircuit<P>>
@@ -210,9 +175,9 @@ mod tests {
         let p = Projective::<P>::rand(&mut rng);
         let q = Projective::<P>::rand(&mut rng);
         let bits = random_bits(&mut rng);
-        let mut one = alloc::vec![false; CHALLENGE_BITS];
+        let mut one = alloc::vec![false; T_BITS];
         one[0] = true;
-        let all_ones = alloc::vec![true; CHALLENGE_BITS];
+        let all_ones = alloc::vec![true; T_BITS];
         let r = CycleFoldCircuit::<P>::new(bits.clone(), p, q).r();
         alloc::vec![
             CycleFoldCircuit::new(bits.clone(), p, q),
@@ -220,7 +185,7 @@ mod tests {
             // Identity in every position, and an identity output.
             CycleFoldCircuit::new(bits.clone(), Projective::zero(), q),
             CycleFoldCircuit::new(bits.clone(), p, Projective::zero()),
-            CycleFoldCircuit::new(alloc::vec![false; CHALLENGE_BITS], p, q),
+            CycleFoldCircuit::new(alloc::vec![false; T_BITS], p, q),
             CycleFoldCircuit::new(bits.clone(), -(q * r), q),
             CycleFoldCircuit::placeholder(),
             // Doubling inside the final addition: p1 = [r]·p2.
