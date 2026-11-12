@@ -183,15 +183,17 @@ contract ZenoLlullVerifier {
 
     /// @notice Closes the session like `finalize` and verifies on-chain that
     /// the final accumulator is satisfiable, marking the session `decided`.
-    /// @param proof `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C]`: the two
-    /// evaluations, the commitment blindings, the two KZG opening proofs and
-    /// the Groth16 proof.
+    /// @param proof `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C, d]`: the two
+    /// evaluations, the commitment blindings, the two KZG opening proofs, the
+    /// Groth16 proof and the digest `d` of the witness inside that proof.
+    /// The evaluation point is derived from `d`, so the Groth16 witness is
+    /// fixed before the point at which it is compared with the commitments.
     /// @param key the decider key registered for the session's circuit:
     /// `[H, [τ]₂, α, β, γ, δ, IC…]`.
     function finalizeWithProof(
         bytes32 sessionId,
         bytes calldata maskProof,
-        uint256[16] calldata proof,
+        uint256[17] calldata proof,
         uint256[] calldata key
     ) external {
         Session storage s = _foldMask(sessionId, maskProof);
@@ -200,14 +202,14 @@ contract ZenoLlullVerifier {
             revert UnknownDeciderKey();
         }
         uint256[] memory x = s.x;
-        if (key.length != 20 + 2 * (x.length + 5)) revert UnknownDeciderKey();
-        if (proof[0] >= R || proof[1] >= R || proof[2] >= R || proof[3] >= R) {
+        if (key.length != 20 + 2 * (x.length + 6)) revert UnknownDeciderKey();
+        if (proof[0] >= R || proof[1] >= R || proof[2] >= R || proof[3] >= R || proof[16] >= R) {
             revert ScalarOutOfRange();
         }
 
         // Evaluation point and batching challenge.
         uint256 c = uint256(
-            keccak256(abi.encodePacked(TAG_POINT, s.vk, s.ex, s.ey, s.u, s.wx, s.wy, x))
+            keccak256(abi.encodePacked(TAG_POINT, s.vk, s.ex, s.ey, s.u, s.wx, s.wy, x, proof[16]))
         ) % R;
         uint256 g = uint256(
             keccak256(
@@ -235,7 +237,7 @@ contract ZenoLlullVerifier {
             pairs[7] = _neg(qy);
             for (uint256 i = 0; i < 4; ++i) pairs[8 + i] = key[2 + i];
         }
-        // Groth16 with public inputs (u, x, c, W(c), E(c)):
+        // Groth16 with public inputs (u, x, d, c, W(c), E(c)):
         //   e(−A, B) · e(α, β) · e(IC₀ + Σ inᵢ·ICᵢ, γ) · e(C, δ) = 1
         {
             (uint256 vx, uint256 vy) = _addMul(key[20], key[21], key[22], key[23], s.u);
@@ -243,9 +245,10 @@ contract ZenoLlullVerifier {
             for (uint256 i = 0; i < n; ++i) {
                 (vx, vy) = _addMul(vx, vy, key[24 + 2 * i], key[25 + 2 * i], x[i]);
             }
-            (vx, vy) = _addMul(vx, vy, key[24 + 2 * n], key[25 + 2 * n], c);
-            (vx, vy) = _addMul(vx, vy, key[26 + 2 * n], key[27 + 2 * n], proof[0]);
-            (vx, vy) = _addMul(vx, vy, key[28 + 2 * n], key[29 + 2 * n], proof[1]);
+            (vx, vy) = _addMul(vx, vy, key[24 + 2 * n], key[25 + 2 * n], proof[16]);
+            (vx, vy) = _addMul(vx, vy, key[26 + 2 * n], key[27 + 2 * n], c);
+            (vx, vy) = _addMul(vx, vy, key[28 + 2 * n], key[29 + 2 * n], proof[0]);
+            (vx, vy) = _addMul(vx, vy, key[30 + 2 * n], key[31 + 2 * n], proof[1]);
             pairs[12] = proof[8];
             pairs[13] = _neg(proof[9]);
             for (uint256 i = 0; i < 4; ++i) pairs[14 + i] = proof[10 + i];

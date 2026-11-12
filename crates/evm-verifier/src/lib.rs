@@ -31,7 +31,7 @@ use ark_serialize::CanonicalSerialize;
 use ark_snark::SNARK;
 use ark_std::rand::RngCore;
 use core_r1cs::{R1CSInstance, R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness};
-use decider_circuit::DeciderCircuit;
+use decider_circuit::{witness_digest, DeciderCircuit};
 use decider_zk::spartan::{self, SpartanProof};
 use llull_folder::{
     commit_witness, nifs_prove_relaxed_with, nifs_prove_with, sample_relaxed, CommitmentKey,
@@ -93,11 +93,13 @@ fn challenge_full(words: &[Word]) -> Fr {
     Fr::from_be_bytes_mod_order(&keccak(words))
 }
 
-/// The point at which the decider opens `comm_W` and `comm_E`; it depends on
-/// the whole final accumulator, hence on both commitments.
-pub fn decider_point(vk: &Word, acc: &RelaxedR1CSInstance<G1>) -> Fr {
+/// The point at which the decider opens `comm_W` and `comm_E`. It depends on
+/// the whole final accumulator and on the digest `d` of the vectors inside
+/// the decider circuit, so those vectors are fixed before the point is.
+pub fn decider_point(vk: &Word, acc: &RelaxedR1CSInstance<G1>, digest: &Fr) -> Fr {
     let mut words = alloc::vec![word(&Fr::from(TAG_POINT)), *vk];
     relaxed_words(&mut words, acc);
+    words.push(word(digest));
     challenge_full(&words)
 }
 
@@ -334,13 +336,17 @@ impl OnChainFolder {
         // Refuse to prove an accumulator that does not satisfy the circuit.
         llull_folder::check_accumulator(&params.ck, &params.shape, &acc, &witness)
             .map_err(|_| DeciderError::Unsatisfied)?;
-        let c = decider_point(&params.vk, &acc);
+        let poseidon = llull_folder::transcript::poseidon_config::<Fr>();
+        let digest = witness_digest(&poseidon, &witness.w, &witness.e);
+        let c = decider_point(&params.vk, &acc, &digest);
         let (w_eval, pi_w) = kzg::open(&params.ck, &witness.w, c);
         let (e_eval, pi_e) = kzg::open(&params.ck, &witness.e, c);
         let circuit = DeciderCircuit {
             shape: &params.shape,
+            poseidon: &poseidon,
             u: Some(acc.u),
             x: Some(acc.x.clone()),
+            digest: Some(digest),
             c: Some(c),
             w_eval: Some(w_eval),
             e_eval: Some(e_eval),
@@ -350,6 +356,7 @@ impl OnChainFolder {
         let groth16 = Groth16::<Bn254>::prove(&keys.pk, circuit, rng)
             .map_err(|_| DeciderError::Unsatisfied)?;
         let proof = OnChainDeciderProof {
+            digest,
             w_eval,
             e_eval,
             r_w: witness.r_w,
@@ -410,9 +417,10 @@ impl DeciderKeys {
         params: &EvmParams,
         rng: &mut (impl RngCore + ark_std::rand::CryptoRng),
     ) -> Result<Self, DeciderError> {
-        let (pk, vk) =
-            Groth16::<Bn254>::circuit_specific_setup(DeciderCircuit::blank(&params.shape), rng)
-                .map_err(|_| DeciderError::Setup)?;
+        let poseidon = llull_folder::transcript::poseidon_config::<Fr>();
+        let circuit = DeciderCircuit::blank(&params.shape, &poseidon);
+        let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, rng)
+            .map_err(|_| DeciderError::Setup)?;
         Ok(Self { pk, vk })
     }
 }
@@ -420,6 +428,8 @@ impl DeciderKeys {
 /// The constant-size proof verified by `finalizeWithProof`.
 #[derive(Clone, Debug)]
 pub struct OnChainDeciderProof {
+    /// `Poseidon(W, E)` of the vectors inside the decider circuit.
+    pub digest: Fr,
     pub w_eval: Fr,
     pub e_eval: Fr,
     pub r_w: Fr,
@@ -439,7 +449,7 @@ pub fn verify_onchain_decider(
     let Some(tau_g2) = params.tau_g2 else {
         return false;
     };
-    let c = decider_point(&params.vk, acc);
+    let c = decider_point(&params.vk, acc, &proof.digest);
     let gamma = batch_challenge(&c, &proof.w_eval, &proof.e_eval, &proof.pi_w, &proof.pi_e);
     // One batched KZG opening of the unblinded commitments.
     let comm =
@@ -451,7 +461,7 @@ pub fn verify_onchain_decider(
     }
     let mut inputs = alloc::vec![acc.u];
     inputs.extend_from_slice(&acc.x);
-    inputs.extend([c, proof.w_eval, proof.e_eval]);
+    inputs.extend([proof.digest, c, proof.w_eval, proof.e_eval]);
     Groth16::<Bn254>::verify(groth16_vk, &inputs, &proof.groth16).unwrap_or(false)
 }
 

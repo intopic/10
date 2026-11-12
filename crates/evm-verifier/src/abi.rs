@@ -134,8 +134,8 @@ pub fn register_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
     out
 }
 
-/// The 16 proof words of `finalizeWithProof`:
-/// `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C]`.
+/// The 17 proof words of `finalizeWithProof`:
+/// `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C, d]`.
 pub fn decider_proof_words(proof: &OnChainDeciderProof) -> Vec<Word> {
     let mut words = alloc::vec![
         word(&proof.w_eval),
@@ -148,10 +148,11 @@ pub fn decider_proof_words(proof: &OnChainDeciderProof) -> Vec<Word> {
     words.extend(g1_words(&proof.groth16.a));
     words.extend(g2_words(&proof.groth16.b));
     words.extend(g1_words(&proof.groth16.c));
+    words.push(word(&proof.digest));
     words
 }
 
-/// `finalizeWithProof(bytes32 sessionId, bytes maskProof, uint256[16] proof, uint256[] key)`.
+/// `finalizeWithProof(bytes32 sessionId, bytes maskProof, uint256[17] proof, uint256[] key)`.
 pub fn finalize_with_proof(
     session: &Word,
     mask: &MaskProof,
@@ -159,8 +160,8 @@ pub fn finalize_with_proof(
     key: &[Word],
 ) -> Vec<u8> {
     let mask = mask_bytes(mask);
-    let head = 32 * (1 + 1 + 16 + 1);
-    let mut out = selector("finalizeWithProof(bytes32,bytes,uint256[16],uint256[])").to_vec();
+    let head = 32 * (1 + 1 + 17 + 1);
+    let mut out = selector("finalizeWithProof(bytes32,bytes,uint256[17],uint256[])").to_vec();
     out.extend(session);
     out.extend(uint(head));
     for w in decider_proof_words(proof) {

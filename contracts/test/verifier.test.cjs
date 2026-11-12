@@ -177,14 +177,14 @@ const intrinsicGas = (data) =>
   assert.ok((await call(owner, fb.register)).ok);
   await revertsWith(call(owner, fb.register), "CircuitAlreadyRegistered()");
 
-  // Forgeries: flip one bit in each of the 16 proof words and in the key.
+  // Forgeries: flip one bit in each of the 17 proof words and in the key.
   const flip = (hex, byteOffset) => {
     const i = 2 + 2 * byteOffset;
     const b = (parseInt(hex.slice(i, i + 2), 16) ^ 1).toString(16).padStart(2, "0");
     return hex.slice(0, i) + b + hex.slice(i + 2);
   };
   const proofStart = 4 + 64; // selector, sessionId, offset of maskProof
-  for (let w = 0; w < 16; w++) {
+  for (let w = 0; w < 17; w++) {
     const res = await call(prover, flip(fwp, proofStart + 32 * w + 31));
     assert.equal(res.ok, false, `forged proof word ${w} was accepted`);
   }

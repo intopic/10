@@ -41,8 +41,8 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 
 ## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese (vendimtar me dy mënyra) ✅ / 🚧
 
-KPI: prova finale < 4 KB — **arritur në Mënyrën B (512 bajt)**; Mënyra A ~10 KB.
-Kosto EVM < 300k gas — **arritur për çdo hap (~74k)**; vendimi final në zinxhir kushton ~448k një herë për sesion.
+KPI: prova finale < 4 KB — **arritur në Mënyrën B (544 bajt)**; Mënyra A ~10 KB.
+Kosto EVM < 300k gas — **arritur për çdo hap (~74k)**; vendimi final në zinxhir kushton ~456k një herë për sesion.
 
 Maskimi zero-knowledge (i përbashkët):
 
@@ -60,7 +60,10 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 - [x] Palosje në zinxhir: `verifyFoldedProof(bytes, uint256[])` me 2 `ecMul` + 2 `ecAdd`, sfidë Keccak,
       sesione, zinxhirim `z_out → z_in`, `protocolFee`
 - [x] Angazhime KZG mbi SRS universale (`evm-verifier::kzg`), homomorfike si Pedersen
-- [x] Qarku vendimtar Groth16 (`decider_circuit`): R1CS e relaksuar + `W(c)`, `E(c)`
+- [x] Qarku vendimtar Groth16 (`decider_circuit`): R1CS e relaksuar + `d = Poseidon(W, E)` + `W(c)`, `E(c)`,
+      me `c = keccak(akumulator, d)`. Digjesti `d` e fikson dëshminë brenda Groth16 **para** se të dihet
+      pika `c`; pa të, provuesi mund të zëvendësonte dëshminë me një tjetër që përputhet vetëm në `c`
+      (e çarë e versionit të parë, e mbyllur me test regresi)
 - [x] `finalizeWithProof`: palosja maskuese + 2 hapje KZG të grupuara + Groth16 në një thirrje
       çiftëzimi me 6 çifte; sesioni shënohet `decided`
 - [x] Test në EVM lokale me precompile reale: akumulatori në zinxhir = ai i provuesit, 16 falsifikime
@@ -119,7 +122,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | SDK native (Python/Swift/Kotlin, 4 fije, qark Circom) | ~93 ms / hap |
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
-| `finalizeWithProof` në EVM (një herë) | ~448k gas, provë 512 bajt |
+| `finalizeWithProof` në EVM (një herë) | ~456k gas, provë 544 bajt |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |
 | Verifikimi i provës së kompresuar | ~0.2 s në 2^10, ~0.8 s në 2^16 |
