@@ -9,6 +9,8 @@ publish.workspace = true
 core-r1cs = { path = "../core-r1cs", default-features = false }
 llull-folder = { path = "../llull-folder", default-features = false }
 decider-zk = { path = "../decider-zk", default-features = false }
+zeno-ivc = { path = "../zeno-ivc", default-features = false }
+ark-grumpkin.workspace = true
 ark-ff.workspace = true
 ark-ec.workspace = true
 ark-std.workspace = true
@@ -24,18 +26,17 @@ sha3.workspace = true
 
 [dev-dependencies]
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
-zeno-ivc = { path = "../zeno-ivc" }
-ark-grumpkin.workspace = true
 
 [features]
 default = ["parallel", "cli"]
 parallel = [
     "llull-folder/parallel",
     "decider-zk/parallel",
+    "zeno-ivc/parallel",
     "core-r1cs/parallel",
     "ark-groth16/parallel",
 ]
-cli = ["llull-folder/cli", "ark-std/std"]
+cli = ["llull-folder/cli", "zeno-ivc/cli", "ark-std/std"]
 
 [[bin]]
 name = "zeno-evm-fixture"

@@ -3,7 +3,11 @@
 //! after each of them, plus the off-chain decider's verdict.
 //!
 //! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--rounds N]
-//!        [--mode transparent|onchain|universal] [--ptau FILE]`
+//!        [--mode transparent|onchain|universal|recursive] [--ptau FILE]`
+//!
+//! `recursive` runs the CycleFold IVC for `--steps` steps and emits the
+//! `finalizeRecursive` call (over a 2^20-power reference string: `--ptau`, or
+//! a locally sampled test string).
 //!
 //! `onchain` loads the KZG reference string from a small ceremony-format
 //! `.ptau` file, uses locally generated (test-only) Groth16 decider keys and emits the `finalizeWithProof` flow.
@@ -39,6 +43,7 @@ fn main() {
     let mut steps = 5usize;
     let mut onchain = false;
     let mut universal_mode = false;
+    let mut recursive_mode = false;
     let mut rounds_override: Option<usize> = None;
     let mut ptau_path: Option<String> = None;
     let mut argv = std::env::args().skip(1);
@@ -58,6 +63,7 @@ fn main() {
             "--mode" => {
                 onchain = value == "onchain";
                 universal_mode = value == "universal";
+                recursive_mode = value == "recursive";
             }
             other => panic!("unknown option {other}"),
         }
@@ -65,6 +71,15 @@ fn main() {
 
     // Fixed seed: the scenario must be reproducible across invocations.
     let mut rng = StdRng::seed_from_u64(0x5eed);
+    if recursive_mode {
+        recursive(
+            steps,
+            rounds_override.unwrap_or(4),
+            ptau_path.as_deref(),
+            &mut rng,
+        );
+        return;
+    }
     // The universal mode commits to the matrices too; a smaller circuit
     // keeps it within the 128 powers of the test ceremony file.
     let rounds = rounds_override.unwrap_or(if universal_mode { 8 } else { 64 });
@@ -180,5 +195,56 @@ fn main() {
         acc_json(&final_acc),
         snark_ok,
         snark_rejects_other
+    );
+}
+
+/// The `finalizeRecursive` scenario.
+fn recursive(steps: usize, rounds: usize, ptau: Option<&str>, rng: &mut StdRng) {
+    use evm_verifier::recursive::{self, RecursiveParams};
+    use zeno_ivc::{cyclefold::CycleFoldAccumulator, CubicStep};
+    let srs = match ptau {
+        Some(path) => {
+            let bytes = std::fs::read(path).expect("readable .ptau file");
+            Srs::from_ptau(&bytes, 1 << 20, rng).expect("valid .ptau")
+        }
+        None => Srs::insecure_for_testing(1 << 20, rng),
+    };
+    let step = CubicStep { rounds };
+    let params =
+        RecursiveParams::setup(&step, b"zeno-llull/evm-fixture/recursive", &srs).expect("setup");
+    drop(srs);
+    let mut ivc = CycleFoldAccumulator::new(&params.ivc, vec![Fr::from(3u64)]).expect("ivc");
+    for _ in 0..steps {
+        ivc.prove_step(&params.ivc, &step, rng).expect("step");
+    }
+    let proof = recursive::prove(&params, &ivc, rng).expect("recursive proof");
+    let (calldata, starts) = recursive::calldata(&params, &proof);
+    let args = recursive::arguments(&params, &proof);
+    let lens: Vec<String> = args.iter().map(|a| a.len().to_string()).collect();
+    let starts: Vec<String> = starts.iter().map(|s| s.to_string()).collect();
+    let mut claim = vec![word(&Fr::from(proof.i))];
+    claim.extend(proof.z0.iter().chain(&proof.zi).map(word));
+    let decided_key = {
+        use sha3::{Digest, Keccak256};
+        let claim_hash: [u8; 32] = Keccak256::digest(claim.concat()).into();
+        let mut h = Keccak256::new();
+        h.update(params.system_id());
+        h.update(claim_hash);
+        let key: [u8; 32] = h.finalize().into();
+        key
+    };
+    println!(
+        "{{\"cfCode\":\"{}\",\"systemId\":\"{}\",\"decidedKey\":\"{}\",\"claim\":\"{}\",\"steps\":{},\"calldata\":\"{}\",\"starts\":[{}],\"lengths\":[{}],\"primaryConstraints\":{},\"closingConstraints\":{},\"proofBytes\":{}}}",
+        hex(&params.cf_code),
+        hex(&params.system_id()),
+        hex(&decided_key),
+        hex(&claim.concat()),
+        proof.i,
+        hex(&calldata),
+        starts.join(","),
+        lens.join(","),
+        params.primary.shape.num_constraints,
+        params.closing.shape.num_constraints,
+        32 * (args[3].len() + args[4].len() + args[5].len()),
     );
 }

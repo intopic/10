@@ -2,11 +2,13 @@
 //! Solidity verifier with `keccak256(abi.encodePacked(...))`.
 //!
 //! `absorb(words)`:  `state ← keccak(0 ‖ state ‖ words)`
-//! `challenge()`:    `state ← keccak(1 ‖ state)`, output `state mod r`.
+//! `challenge()`:    `state ← keccak(1 ‖ state)`, output `state mod r`
+//!                   (`challenge_q()`: the same, output `state mod q`, for
+//!                   arguments over the base field `Fq`).
 
 use crate::{point_words, word, Word};
 use alloc::vec::Vec;
-use ark_bn254::{Fr, G1Projective as G1};
+use ark_bn254::{Fq, Fr, G1Projective as G1};
 use ark_ff::PrimeField;
 use decider_zk::sumcheck::FsTranscript;
 use sha3::{Digest, Keccak256};
@@ -59,6 +61,37 @@ impl KeccakTranscript {
 
     pub fn challenges(&mut self, n: usize) -> Vec<Fr> {
         (0..n).map(|_| self.challenge()).collect()
+    }
+
+    fn squeeze(&mut self) -> Word {
+        let mut h = Keccak256::new();
+        h.update(tag(1));
+        h.update(self.state);
+        self.state = h.finalize().into();
+        self.state
+    }
+
+    /// A challenge in the base field: `keccak(1 ‖ state) mod q`.
+    pub fn challenge_q(&mut self) -> Fq {
+        Fq::from_be_bytes_mod_order(&self.squeeze())
+    }
+
+    pub fn challenges_q(&mut self, n: usize) -> Vec<Fq> {
+        (0..n).map(|_| self.challenge_q()).collect()
+    }
+
+    pub fn absorb_fq(&mut self, values: &[Fq]) {
+        let words: Vec<Word> = values.iter().map(word).collect();
+        self.absorb_words(&words);
+    }
+}
+
+impl FsTranscript<Fq> for KeccakTranscript {
+    fn absorb_scalars(&mut self, _label: &'static [u8], values: &[Fq]) {
+        self.absorb_fq(values);
+    }
+    fn challenge_scalar(&mut self) -> Fq {
+        self.challenge_q()
     }
 }
 

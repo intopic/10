@@ -9,4 +9,4 @@ pub mod decider;
 pub mod hyperkzg;
 pub mod transcript;
 
-pub use decider::{prove, verify, CircuitKey, Dims, UniversalProof};
+pub use decider::{prove, verify, verify_deferred, CircuitKey, Dims, UniversalProof};

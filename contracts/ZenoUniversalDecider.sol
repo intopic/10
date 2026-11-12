@@ -68,6 +68,41 @@ contract ZenoUniversalDecider {
         uint256[] calldata acc,
         uint256[] calldata proof
     ) external view returns (bool) {
+        (uint256 lx, uint256 ly, uint256 rx, uint256 ry) = _verify(vk, key, acc, proof);
+        // e(L, G₂) · e(−Rt, [τ]₂) = 1
+        uint256[12] memory input = [
+            lx, ly, G2_X_IM, G2_X_RE, G2_Y_IM, G2_Y_RE,
+            rx, _neg(ry), key[19], key[20], key[21], key[22]
+        ];
+        bool ok;
+        uint256[1] memory out;
+        assembly ("memory-safe") {
+            ok := staticcall(gas(), 0x08, input, 0x180, out, 0x20)
+        }
+        if (!ok || out[0] != 1) revert InvalidProof(9);
+        return true;
+    }
+
+    /// @notice Every check of `verify` except the final pairing: returns
+    /// `(L, Rt)` with the proof valid iff `e(L, G₂) = e(Rt, [τ]₂)` (reverts
+    /// if any other check fails). Callers verifying several proofs over the
+    /// same reference string combine their equations with a random
+    /// challenge and check them with one pairing.
+    function verifyDeferred(
+        bytes32 vk,
+        uint256[] calldata key,
+        uint256[] calldata acc,
+        uint256[] calldata proof
+    ) external view returns (uint256[4] memory lr) {
+        (lr[0], lr[1], lr[2], lr[3]) = _verify(vk, key, acc, proof);
+    }
+
+    function _verify(
+        bytes32 vk,
+        uint256[] calldata key,
+        uint256[] calldata acc,
+        uint256[] calldata proof
+    ) private view returns (uint256, uint256, uint256, uint256) {
         if (key.length != 23 || acc.length < 6) revert MalformedInput();
         uint256 logM = key[0];
         uint256 logN = key[1];
@@ -122,10 +157,7 @@ contract ZenoUniversalDecider {
         uint256[] memory tail = _tail(ry);
         {
             // Z(r_y) = (1 − r_y0)·W(r_y') + r_y0·IO(r_y'), IO = (u, x, 0, …).
-            uint256 io = mulmod(acc[2], _eqAt(tail, 0), R);
-            for (uint256 i = 5; i < acc.length; ++i) {
-                io = addmod(io, mulmod(acc[i], _eqAt(tail, i - 4), R), R);
-            }
+            uint256 io = _ioEval(acc, tail);
             uint256 z = addmod(mulmod(addmod(1, R - ry[0], R), vmw[1], R), mulmod(ry[0], io, R), R);
             if (claim != mulmod(vmw[0], z, R)) revert InvalidProof(2);
         }
@@ -205,18 +237,7 @@ contract ZenoUniversalDecider {
             _openAll(s, c);
         }
         if (s.pos != s.proof.length) revert MalformedInput();
-        // e(L, G₂) · e(−Rt, [τ]₂) = 1
-        uint256[12] memory input = [
-            s.lx, s.ly, G2_X_IM, G2_X_RE, G2_Y_IM, G2_Y_RE,
-            s.rx, _neg(s.ry), key[19], key[20], key[21], key[22]
-        ];
-        bool ok;
-        uint256[1] memory out;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x08, input, 0x180, out, 0x20)
-        }
-        if (!ok || out[0] != 1) revert InvalidProof(9);
-        return true;
+        return (s.lx, s.ly, s.rx, s.ry);
     }
 
     // ------------------------------------------------------------------
@@ -270,34 +291,36 @@ contract ZenoUniversalDecider {
             point[i] = r;
             // p(0) = m[0], p(1) = claim − m[0], p(2) = m[1], (p(3) = m[2]).
             uint256 e1 = addmod(claim, R - m[0] % R, R);
-            uint256 r1 = addmod(r, R - 1, R);
-            uint256 r2 = addmod(r, R - 2, R);
-            if (degree == 2) {
-                // p(r) = p0·(r−1)(r−2)/2 − p1·r(r−2) + p2·r(r−1)/2
-                claim = addmod(
-                    mulmod(mulmod(m[0], INV2, R), mulmod(r1, r2, R), R),
-                    addmod(
-                        R - mulmod(e1, mulmod(r, r2, R), R),
-                        mulmod(mulmod(m[1], INV2, R), mulmod(r, r1, R), R),
-                        R
-                    ),
-                    R
-                );
-            } else {
-                uint256 r3 = addmod(r, R - 3, R);
-                // Lagrange basis on the nodes 0, 1, 2, 3.
-                uint256 l0 = R - mulmod(mulmod(mulmod(r1, r2, R), r3, R), INV6, R);
-                uint256 l1 = mulmod(mulmod(mulmod(r, r2, R), r3, R), INV2, R);
-                uint256 l2 = R - mulmod(mulmod(mulmod(r, r1, R), r3, R), INV2, R);
-                uint256 l3 = mulmod(mulmod(mulmod(r, r1, R), r2, R), INV6, R);
-                claim = addmod(
-                    addmod(mulmod(m[0], l0, R), mulmod(e1, l1, R), R),
-                    addmod(mulmod(m[1], l2, R), mulmod(m[2], l3, R), R),
-                    R
-                );
-            }
+            claim = degree == 2 ? _interp2(m[0], e1, m[1], r) : _interp3(m[0], e1, m[1], m[2], r);
         }
         return (claim, point);
+    }
+
+    /// @dev `p(r)` for the quadratic with `p(0), p(1), p(2) = p0, p1, p2`:
+    /// `p0·(r−1)(r−2)/2 − p1·r(r−2) + p2·r(r−1)/2`.
+    function _interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r) private pure returns (uint256) {
+        uint256 r1 = addmod(r, R - 1, R);
+        uint256 r2 = addmod(r, R - 2, R);
+        return addmod(
+            mulmod(mulmod(p0, INV2, R), mulmod(r1, r2, R), R),
+            addmod(R - mulmod(p1, mulmod(r, r2, R), R), mulmod(mulmod(p2, INV2, R), mulmod(r, r1, R), R), R),
+            R
+        );
+    }
+
+    /// @dev `p(r)` for the cubic with values `p0…p3` at `0…3` (Lagrange basis).
+    function _interp3(uint256 p0, uint256 p1, uint256 p2, uint256 p3, uint256 r)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 r1 = addmod(r, R - 1, R);
+        uint256 r2 = addmod(r, R - 2, R);
+        uint256 r3 = addmod(r, R - 3, R);
+        uint256 acc = mulmod(p0, R - mulmod(mulmod(mulmod(r1, r2, R), r3, R), INV6, R), R);
+        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, R), r3, R), INV2, R), R), R);
+        acc = addmod(acc, mulmod(p2, R - mulmod(mulmod(mulmod(r, r1, R), r3, R), INV2, R), R), R);
+        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, R), r2, R), INV6, R), R), R);
     }
 
     /// One evaluation claim of the joint opening and its part of the proof.
@@ -465,14 +488,32 @@ contract ZenoUniversalDecider {
         }
     }
 
-    /// @dev `eq(point, index)` for a boolean index (first variable = MSB).
-    function _eqAt(uint256[] memory point, uint256 index) private pure returns (uint256 acc) {
+    /// @dev `Σ_i IO_i·eq(point, i)` for `IO = (u, x…)` (`acc[2]`, `acc[5…]`).
+    /// The indices are below `2^b`, so the first `n − b` variables only
+    /// contribute the factor `Π (1 − point_j)`, and the last `b` an `eq`
+    /// table of `2^b` entries: `2^b + |IO|` products instead of `|IO|·n`.
+    function _ioEval(uint256[] calldata acc, uint256[] memory point) private pure returns (uint256 sum) {
+        uint256 count = acc.length - 4;
+        uint256 b;
+        while ((1 << b) < count) ++b;
         uint256 n = point.length;
-        if (index >> n != 0) return 0;
-        acc = 1;
-        for (uint256 j = 0; j < n; ++j) {
-            uint256 bit = (index >> (n - 1 - j)) & 1;
-            acc = mulmod(acc, bit == 1 ? point[j] : addmod(1, R - point[j], R), R);
+        if (b > n) revert MalformedInput();
+        uint256[] memory t = new uint256[](1 << b);
+        t[0] = 1;
+        for (uint256 i = 0; i < b; ++i) {
+            uint256 r = point[n - b + i];
+            for (uint256 j = 1 << i; j > 0; --j) {
+                uint256 hi = mulmod(t[j - 1], r, R);
+                t[2 * j - 1] = hi;
+                t[2 * j - 2] = addmod(t[j - 1], R - hi, R);
+            }
+        }
+        sum = mulmod(acc[2], t[0], R);
+        for (uint256 i = 5; i < acc.length; ++i) {
+            sum = addmod(sum, mulmod(acc[i], t[i - 4], R), R);
+        }
+        for (uint256 j = 0; j < n - b; ++j) {
+            sum = mulmod(sum, addmod(1, R - point[j], R), R);
         }
     }
 

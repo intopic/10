@@ -21,6 +21,7 @@ extern crate alloc;
 pub mod abi;
 pub mod decider_circuit;
 pub mod kzg;
+pub mod recursive;
 pub mod universal;
 
 use alloc::vec::Vec;
@@ -69,7 +70,7 @@ pub fn point_words(p: &G1) -> [Word; 2] {
     }
 }
 
-fn relaxed_words(out: &mut Vec<Word>, u: &RelaxedR1CSInstance<G1>) {
+pub(crate) fn relaxed_words(out: &mut Vec<Word>, u: &RelaxedR1CSInstance<G1>) {
     out.extend(point_words(&u.comm_e));
     out.push(word(&u.u));
     out.extend(point_words(&u.comm_w));

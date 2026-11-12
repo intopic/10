@@ -567,35 +567,45 @@ pub fn verify(
     let Some(tau_g2) = params.tau_g2 else {
         return false;
     };
+    verify_deferred(params, key, acc, proof)
+        .is_some_and(|(left, right)| hyperkzg::pairing_check(left, right, tau_g2))
+}
+
+/// [`verify`] without its final pairing check: returns `(L, R)` such that
+/// the proof is valid iff `e(L, G₂) = e(R, [τ]₂)`, or `None` if any other
+/// check fails. Equations of several proofs over the same reference string
+/// can then share one pairing check (combined with a random challenge).
+pub fn verify_deferred(
+    params: &EvmParams,
+    key: &CircuitKey,
+    acc: &RelaxedR1CSInstance<G1>,
+    proof: &UniversalProof,
+) -> Option<(G1, G1)> {
+    let _ = params.tau_g2?;
     let dims = key.dims;
     if acc.x.len() != params.shape.num_io {
-        return false;
+        return None;
     }
     let mut tr = start(params, &key.digest(), acc, &proof.r_w, &proof.r_e);
 
     // 1. Outer sum-check.
     let tau = tr.challenges(dims.log_m);
-    let Some((claim, rx)) = sumcheck::verify(Fr::zero(), dims.log_m, 3, &proof.outer, &mut tr)
-    else {
-        return false;
-    };
+    let (claim, rx) = sumcheck::verify(Fr::zero(), dims.log_m, 3, &proof.outer, &mut tr)?;
     let [va, vb, vc, ve] = proof.claims;
     if claim != eq_points(&tau, &rx) * (va * vb - acc.u * vc - ve) {
-        return false;
+        return None;
     }
     tr.absorb_scalars(&proof.claims);
 
     // 2. Inner sum-check.
     let rho = tr.challenge();
-    let Some((claim, ry)) = sumcheck::verify(
+    let (claim, ry) = sumcheck::verify(
         va + rho * vb + rho * rho * vc,
         dims.log_n + 1,
         2,
         &proof.inner,
         &mut tr,
-    ) else {
-        return false;
-    };
+    )?;
     // Z(r_y) = (1 − r_y0)·W(r_y') + r_y0·IO(r_y'), with IO = (u, x, 0, …).
     let tail = &ry[1..];
     let io_eval = core::iter::once(&acc.u)
@@ -606,7 +616,7 @@ pub fn verify(
         });
     let z_eval = (Fr::one() - ry[0]) * proof.v_w + ry[0] * io_eval;
     if claim != proof.v_m * z_eval {
-        return false;
+        return None;
     }
     tr.absorb_scalars(&[proof.v_m, proof.v_w]);
 
@@ -623,9 +633,7 @@ pub fn verify(
     let delta = tr.challenge();
     let tau_k = tr.challenges(dims.log_k);
     let claim_k = proof.v_m + delta * proof.sums[0] + delta * delta * proof.sums[1];
-    let Some((claim, rk)) = sumcheck::verify(claim_k, dims.log_k, 3, &proof.sc_k, &mut tr) else {
-        return false;
-    };
+    let (claim, rk) = sumcheck::verify(claim_k, dims.log_k, 3, &proof.sc_k, &mut tr)?;
     let e = &proof.evals_k;
     let at_rk = [
         e[0] + rho * e[1] + rho * rho * e[2],
@@ -638,7 +646,7 @@ pub fn verify(
         e[4],
     ];
     if claim != summand_k(&at_rk, &ch, delta) {
-        return false;
+        return None;
     }
     tr.absorb_scalars(&proof.evals_k);
 
@@ -661,18 +669,14 @@ pub fn verify(
         tr.absorb_scalars(evals);
         Some(r)
     };
-    let Some(rj) = table_check(dims.log_m, proof.sums[0], &proof.sc_m, &proof.evals_m, &rx) else {
-        return false;
-    };
-    let Some(rz) = table_check(
+    let rj = table_check(dims.log_m, proof.sums[0], &proof.sc_m, &proof.evals_m, &rx)?;
+    let rz = table_check(
         dims.log_n + 1,
         proof.sums[1],
         &proof.sc_z,
         &proof.evals_z,
         &ry,
-    ) else {
-        return false;
-    };
+    )?;
 
     // 6. Openings, all folded into one pairing check.
     let h = params.ck.h;
@@ -697,8 +701,5 @@ pub fn verify(
         (alloc::vec![p[4], k[5]], &rj, &proof.evals_m),
         (alloc::vec![p[5], k[6]], &rz, &proof.evals_z),
     ];
-    let Some((left, right)) = hyperkzg::verify(&mut tr, &claims, &proof.openings) else {
-        return false;
-    };
-    hyperkzg::pairing_check(left, right, tau_g2)
+    hyperkzg::verify(&mut tr, &claims, &proof.openings)
 }

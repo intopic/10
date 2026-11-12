@@ -30,16 +30,18 @@ impl Srs {
     /// openings. Production deployments must load the powers from a public
     /// multi-party ceremony instead.
     pub fn insecure_for_testing(n: usize, rng: &mut impl RngCore) -> Self {
+        use ark_ec::scalar_mul::ScalarMul;
         let tau = Fr::rand(rng);
-        let g = G1::generator();
         let mut power = Fr::from(1u64);
-        let mut powers = Vec::with_capacity(n);
+        let mut scalars = Vec::with_capacity(n);
         for _ in 0..n {
-            powers.push(g * power);
+            scalars.push(power);
             power *= tau;
         }
+        // Fixed-base windowed multiplication of the generator: the same
+        // points as n separate scalar multiplications, much faster.
         Self {
-            powers_g1: G1::normalize_batch(&powers),
+            powers_g1: G1::generator().batch_mul(&scalars),
             tau_g2: (G2Projective::generator() * tau).into_affine(),
         }
     }

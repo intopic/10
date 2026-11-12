@@ -1,6 +1,6 @@
 # Zeno–Llull Nova IVC — dorëzim për zhvilluesin
 
-Gjendja më 12 nëntor 2026. Ky dokument përmbledh çfarë është ndërtuar, ku
+Gjendja më 12 nëntor 2026 (përditësuar pas finalizimit EVM të IVC-së rekursive). Ky dokument përmbledh çfarë është ndërtuar, ku
 ndodhet projekti, çfarë nuk funksionon ende dhe cilat vendime janë të hapura.
 Plani i detajuar me kutitë e shënuara është në [`ROADMAP.md`](../ROADMAP.md);
 specifikimi origjinal është *Specifikimi Inxhinierik, Ideja 10*.
@@ -16,12 +16,14 @@ kontrata verifikuese në EVM.
 
 ## 2. Depoja dhe mënyra e punës
 
-- Depoja: `intopic/10`. Dega e punës: `claude/great-goldberg-oyeeic`.
+- Depoja: `intopic/10`. Dega e punës: `claude/pensive-brown-7olueh` (më parë
+  `claude/great-goldberg-oyeeic`).
 - Rregulli i ndjekur: çdo commit shtyhet në degën e punës, dhe kalon në `main`
   vetëm pasi GitHub Actions del plotësisht e gjelbër.
-- `main` është në `008b57e`. Commit-i i fundit në degë (`3cae639`, palosja në
-  grup) ishte ende në CI kur u shkrua ky dokument; nëse CI del e gjelbër,
-  duhet kaluar në `main`.
+- `main` është në `5b2cd41`. Puna e CycleFold dhe e finalizimit rekursiv është
+  në degë; pronari ka vendosur ta kalojë të gjithën në `main` së bashku pasi CI
+  të dalë e gjelbër. Shtytja direkte në `main` nga sesioni bllokohet nga sistemi
+  i lejeve, kështu që kalimin e bën pronari.
 - Gjuha: Rust (arkworks 0.5), Solidity 0.8.28 (viaIR, Cancun), pak JavaScript
   për testet e kontratave dhe të WASM-it.
 
@@ -32,20 +34,22 @@ kontrata verifikuese në EVM.
 | `crates/core-r1cs` | Matrica të rralla CSR, R1CS e relaksuar `(AZ)∘(BZ) = u·CZ + E`, urë nga `ark-relations` |
 | `crates/llull-folder` | Angazhime Pedersen (gjeneratorë me hash-to-curve), termi i kryqëzuar `T`, transkript Poseidon, `nifs_prove` / `nifs_verify`, palosje relaksuar-me-relaksuar, CLI `llull-folder` |
 | `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetikë jo-native (CRT), stepper IVC `ZenoAccumulator` mbi ciklet Pallas/Vesta dhe BN254/Grumpkin, `R1csStep` për qarqe të jashtme, CLI `zeno-ivc` |
+| `crates/zeno-ivc/src/cyclefold` | IVC me **CycleFold**: qarku CycleFold, angazhime Hyrax për çdo rresht, qarku primar dhe stepper-i `CycleFoldAccumulator`, qarku mbyllës |
+| `crates/zeno-ivc/src/gadgets` | Gadget-e me peshë të ulët: pika afine, shumëzim skalar ELM, MSM me bazë fikse, Poseidon me gjendje të rrafshuar |
 | `crates/decider-zk` | Maskimi zero-knowledge, sum-check, IPA, prova e shkurtër transparente `CompressedIvcProof`, CLI `zeno-decider` |
-| `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, qarku vendimtar Groth16, **vendimtari universal** (`src/universal/`) |
-| `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë) dhe `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal), me test në EVM lokale |
+| `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, qarku vendimtar Groth16, **vendimtari universal** (`src/universal/`), **vendimtari rekursiv** (`src/recursive.rs`) |
+| `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë), `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal, edhe `verifyDeferred`) dhe `ZenoRecursiveVerifier.sol` (`finalizeRecursive`), me teste në EVM lokale |
 | `crates/sdk-bindings`, `sdk/wasm` | Hyrje nga Circom (`.r1cs` / `.wtns`), API WebAssembly, paketa `@zenollull/wasm-sdk` (me variant me shumë fije) |
 | `crates/mobile-ffi`, `sdk/native`, `sdk/android` | SDK native me UniFFI: lidhje Swift, Kotlin, Python; paketim AAR dhe XCFramework |
 | `crates/zeno-license` | Çelësa licence të nënshkruar Ed25519 dhe mjeti i shitësit |
 | `crates/cloud-prover`, `Dockerfile` | Shërbimi HTTP me pagesë për provë, autentikim me licencë, matje përdorimi |
 | `scripts/` | Skriptet e ndërtimit për WASM, SDK native, AAR, XCFramework dhe testi i kontejnerit |
-| `.github/workflows/ci.yml` | 10 punë: lint, teste, WASM, KPI, kontrata, SDK native, Android, iOS, Cloud Prover |
+| `.github/workflows/ci.yml` | 11 punë: lint, teste, WASM, KPI, kontrata, IVC rekursive mbi PPoT 2^20, SDK native, Android, iOS, Cloud Prover |
 
 Rreth 8 900 rreshta Rust dhe Solidity, 43 teste Rust plus testet në Node,
 Python dhe EVM.
 
-## 4. Tre mënyrat e përdorimit
+## 4. Katër mënyrat e përdorimit
 
 Është e rëndësishme të dallohen, sepse kanë garanci të ndryshme.
 
@@ -64,6 +68,13 @@ janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxh
 **C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
 çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme.
 
+**D. IVC rekursive me CycleFold + `finalizeRecursive`.** `zeno-ivc::cyclefold` +
+`evm-verifier::recursive` + `ZenoRecursiveVerifier.sol`. Provuesi palos N hapa
+jashtë zinxhirit; kontrata vendos gjendjen përfundimtare me një thirrje, me
+kosto **të pavarur nga N** (6.17 M gas). Reference string: `.ptau` publike me
+2^20 fuqi. Nuk ka çelësa për qark. Sistemi identifikohet me `keccak256(vk
+primar ‖ vk mbyllës ‖ hash i të dhënave CycleFold)`, që kushdo e rillogarit.
+
 ## 5. Matjet
 
 Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
@@ -81,6 +92,10 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | `verifyFoldedProofBatch` | rreth 22.9k gas për hap (100 hapa = 2.29 M) |
 | `finalizeUniversal` | 0.82 M gas / 6.7 KB (16 kufizime) → 1.89 M gas / 21.6 KB (65 536 kufizime) |
 | `finalizeWithProof` (Groth16, zhvillim) | rreth 456k gas, 544 bajt |
+| Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 936 kufizime / 66 791 kufizime, 468k elemente jo-zero |
+| Qarku mbyllës | 136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike; 28 s provim, 1.94 GB memorie |
+| Provuesi i `finalizeRecursive` (pas hapave) | rreth 45 s; verifikim native 23 ms |
+| `finalizeRecursive` | **6.17 M gas** (5.22 M ekzekutim + 61 KB calldata), i njëjtë për 1, 3 dhe 10 hapa |
 
 Gazi i `finalizeUniversal` rritet logaritmikisht: rreth 89k gas dhe 1.25 KB
 për çdo dyfishim të qarkut. Matja për 65 536 kufizime është bërë mbi skedarin
@@ -95,7 +110,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 | Koha < 50 ms për hap në 2^16 | **e pa arritur** në 4 vCPU; pronari e ka pranuar vlerën aktuale |
 | "4 000 kufizime për hap" | **e pa arritur** (11 217); pronari e ka pranuar |
 | Provë < 4 KB | vetëm në mënyrën Groth16 të zhvillimit; mënyrat e tjera 6.7–21.6 KB |
-| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M |
+| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 6.17 M (mënyra D, për çdo N) |
 
 ## 7. Çfarë duhet ditur para se të prekësh kodin
 
@@ -120,23 +135,25 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   rrjeta kryesore e sigurisë për këtë.
 - Poseidon i përdorur është varianti i `ark-crypto-primitives` (jo Poseidon2,
   siç përmend specifikimi), me parametra të gjeneruar për çdo fushë.
+- **Sfidat e palosjes në mënyrën D** kanë formën `r = 2^128 + 2t + 1` me `t`
+  127-bitësh. Kjo e bën të pamundur me ndërtim çdo rast përjashtimor të
+  formulave jo të plota të gadget-eve. Mos e ndrysho formën pa ndryshuar edhe
+  argumentin në `gadgets::ec`.
+- **Kontrata e të dhënave CycleFold** lidhet me `extcodehash` në transkript dhe
+  në identitetin e sistemit. Një kontratë tjetër jep identitet tjetër, që
+  pala besuese duhet ta refuzojë.
+- **SHA-256 i `ppot_0080_20.ptau`** në CI u llogarit nga shkarkimi më 12
+  nëntor 2026. Mbron nga ndryshimet e mëvonshme, jo nga skedari origjinal.
+  Struktura e fuqive kontrollohet gjithsesi nga `Srs::from_ptau`.
 - `finalizeUniversal` është matur deri në 65 536 kufizime. Qarqe më të mëdha
   kërkojnë `.ptau` me më shumë fuqi (nevojiten rreth 4× numri i kufizimeve).
 
 ## 8. Çfarë nuk është bërë
 
-1. **Finalizimi në EVM i IVC-së rekursive off-chain** (bashkimi i mënyrave A
-   dhe B: një provë për N hapa, e pavarur nga N). Pengesa: EVM nuk ka
-   precompile për Grumpkin, dhe hapja e angazhimit Pedersen të akumulatorit
-   sekondar (rreth 11 mijë elemente) kërkon një shumëzim skalar për element.
-   Rruga e planifikuar: CycleFold (qarku në Grumpkin bëhet rreth 1.5k
-   kufizime) plus një qark mbyllës BN254 që verifikon akumulatorin e vogël
-   Grumpkin dhe vendoset me `finalizeUniversal`. **Hapat 1–2 janë ndërtuar**
-   (`zeno-ivc::cyclefold`: qarku CycleFold me 1 344 kufizime, akumulator
-   Grumpkin me angazhime Hyrax për çdo rresht, stepper i ri i testuar edhe me
-   çelës KZG). Hapi 3 kërkon më parë gadget-e me peshë të ulët, sepse
-   vendimtari universal varet nga numri i elementeve jo-zero; matjet dhe plani
-   i korrigjuar janë në `ROADMAP.md`.
+1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 6.17 M): vlerësimi i
+   matricave CycleFold me strukturën uniforme të qarkut (~0.65 M sot), qarku
+   mbyllës nën 2^19 elemente jo-zero (një raund më pak në disa sum-check), dhe
+   bashkimi i dy provave universale në një argument të vetëm.
 2. **Ulje e mëtejshme e gazit të `finalizeUniversal`**: reduktimi i pesë
    pretendimeve të vlerësimit në më pak pika.
 3. **Publikimi**: paketa NPM, imazhi Docker, AAR dhe XCFramework ndërtohen në
@@ -149,11 +166,8 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 
 ## 9. Vendime të hapura për pronarin
 
-1. **A të ndërtohet finalizimi EVM i IVC-së rekursive (pika 8.1)?** Hapat e
-   parë (qarku CycleFold dhe stepper-i i ri) ndërtohen dhe testohen në një
-   makinë të zakonshme. Qarku mbyllës në madhësi reale kërkon një makinë me të
-   paktën 64 GB RAM për t'u matur. Duhet vendosur nëse nis tani dhe ku do të
-   ekzekutohet.
+1. **Finalizimi EVM i IVC-së rekursive** është ndërtuar (mënyra D). Mbetet
+   vendimi nëse ia vlen investimi në uljen e mëtejshme të gazit (pika 8.1).
 2. **Mënyra Groth16 (`finalizeWithProof`)**: të hiqet nga kontrata, apo të
    mbetet si mënyrë zhvillimi? Sot është e shënuar "vetëm për zhvillim" dhe
    regjistrimi i çelësave të saj bëhet nga pronari i kontratës.
@@ -161,8 +175,10 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 4. **Publikimi dhe çelësat**: tokeni i organizatës `@zenollull` në NPM dhe
    çelësi privat i licencave të shitësit nuk ekzistojnë ende; mjeti
    `zeno-license keygen` e gjeneron të dytin.
-5. **Zinxhiri i synuar**: me rreth 0.8–1.9 M gas për vendimin final dhe rreth
-   23k gas për hap në grup, mënyra B është praktike kryesisht në L2.
+5. **Zinxhiri i synuar**: mënyra D kushton 6.17 M gas, i njëjtë për çdo N.
+   Mënyra B kushton 0.8–1.9 M për vendimin final plus rreth 23k gas për çdo
+   hap, prandaj mënyra D del më e lirë kur N kalon rreth 190–230 hapa. Të dyja
+   janë praktike kryesisht në L2.
 
 ## 10. Si ndërtohet dhe testohet
 
@@ -190,6 +206,18 @@ cd contracts && npm ci && node test/verifier.test.cjs
 
 Për matjen në 2^16 kufizime, vendos `ZENO_PTAU` te skedari
 `ppot_0080_18.ptau` (URL-ja dhe SHA-256 janë në `.github/workflows/ci.yml`).
+
+IVC-ja rekursive dhe `finalizeRecursive` (mënyra D) kërkojnë 2^20 fuqi. Pa
+`ZENO_PTAU` përdoret një reference string testimi i krijuar lokalisht; me të,
+skedari `ppot_0080_20.ptau`:
+
+```bash
+cargo test --release -p evm-verifier --test closing_decider --test recursive -- --ignored --nocapture
+```
+
+```bash
+cargo build --release -p evm-verifier && node contracts/test/recursive.test.cjs
+```
 
 SDK-të:
 

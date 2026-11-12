@@ -106,7 +106,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [ ] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N) 🚧.
+- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **6.17 M gas** për çdo N.
       Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
       kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
       ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
@@ -181,10 +181,37 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       ngarkim + validim 5.7 s, **provim 26.3 s, provë 24.1 KB**, verifikim native 12 ms,
       **memorie maksimale 1.94 GB**. CI e ekzekuton në çdo shtytje (`recursive-closing`), skedari
       1.2 GB ruhet me `actions/cache` dhe kontrollohet me SHA-256
-    - [ ] mbetet: sum-check-u Spartan mbi `Fq` për akumulatorin CycleFold dhe vlerësimi i matricave
-      të tij (Rust + Solidity), vendimi i akumulatorit primar me `finalizeUniversal`, dhe palosja e
-      instancës së fundit në zinxhir
-  - [ ] Hapi 4 — kontrata (`finalizeRecursive`), test në EVM lokale dhe matja e gazit
+  - [x] **Hapi 4 — `finalizeRecursive`** (`evm-verifier::recursive`, `contracts/ZenoRecursiveVerifier.sol`):
+    - një transkript Keccak: palosja e instancës së fundit në `U` dhe maskimi (ZK) me palosje NIFS në
+      zinxhir; argument Spartan mbi `Fq` për `U_cf` (sum-check i jashtëm dhe i brendshëm, matricat e
+      qarkut CycleFold — fikse për gjithë sistemin — në një kontratë të dhënash 22 KB, të lidhura me
+      `extcodehash`); kontrolli i prodhimeve të brendshme të rreshtave Hyrax; hyrja publike e qarkut
+      mbyllës e ndërtuar nga kontrata vetë; dy prova universale (`verifyDeferred`) me **një** thirrje
+      `ecPairing` (kombinim linear me sfidë nga transkripti)
+    - identiteti i sistemit: `keccak256(vk primar ‖ vk mbyllës ‖ hash i të dhënave CycleFold)`; çdo
+      pretendim i vendosur regjistrohet në `decided`
+    - Rust: `prove` / `verify` (pasqyrë e kontratës); test me 20 falsifikime. EVM lokale: 26
+      falsifikime me një fjalë në çdo pjesë të calldata-s, të gjitha të refuzuara
+    - matur (`ppot_0080_20.ptau`, hap aplikacioni i vogël): provues 45 s, verifikim native 23 ms;
+      **6 172 221 gas** = 5.22 M ekzekutim + 61 KB calldata, **identik për 1, 3 dhe 10 hapa**
+
+      | pjesa | gas |
+      |---|---|
+      | prova universale e qarkut mbyllës (2^18 / 2^20) | 2.01 M |
+      | prova universale e akumulatorit primar (2^17 / 2^19) | 1.38 M |
+      | calldata (61 KB) dhe kosto bazë | 0.95 M |
+      | vlerësimi i matricave CycleFold (4 380 elemente) | ~0.65 M |
+      | tabelat `eq`, sum-check-u mbi `Fq`, palosjet, hyrja e qarkut mbyllës | ~1.05 M |
+      | një `ecPairing` për të dyja provat (kursen ~0.11 M) | 0.12 M |
+
+    - optimizime të bëra gjatë rrugës: ciklet kryesore në assembly dhe të dhënat e matricave të
+      grupuara sipas `(matrica, vlera)` me zhvendosje të gatshme (9.04 M → 6.17 M); vlerësimi i hyrjeve
+      publike në vendimtarin universal me tabelë `eq` vetëm mbi variablat e ulët (`2^b + |x|` në
+      vend të `|x|·log n`). Ngjeshja e 350 hyrjeve publike në një hash nuk ia vlen: ato i llogarit
+      kontrata vetë (nuk janë calldata), dhe një hash Poseidon i tyre në EVM do të kushtonte më shumë
+  - [ ] Ulje e mëtejshme: vlerësimi i matricave CycleFold me strukturën uniforme të qarkut (127
+        iteracione identike) në vend të 4 380 elementeve; qarku mbyllës nën 2^19 elemente jo-zero;
+        bashkimi i dy provave universale në një argument të vetëm
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
