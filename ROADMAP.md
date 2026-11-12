@@ -72,11 +72,22 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 - [x] `Srs::from_ptau`: ngarkon SRS nga skedarët `.ptau` të ceremonive publike (Perpetual Powers of
       Tau / Hermez) dhe verifikon strukturën (pika në kurbë, fuqi të njëpasnjëshme me çiftëzim);
       testi EVM përdor një skedar real të këtij formati
-- [ ] Çelësat Groth16 të vendimtarit janë **specifikë për qarkun e aplikacionit** (qarku vendimtar
-      përmban matricat `A, B, C`): duhet ceremoni faze 2 për çdo qark, ose zëvendësim me një
-      sistem me setup universal (PlonK/HyperKZG) që të mos kërkohet asgjë nga klienti
-- [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k; kërkon vendimtar pa Groth16
-- [ ] Mënyra B për IVC-në rekursive off-chain (tani zinxhiri është vetë verifikuesi i palosjes)
+- [ ] Vendimtar universal (pa asnjë setup për qark). Analiza e rrugëve të provuara:
+  - *Groth16 me matricat si dëshmi* (qark fiks, i lidhur me `.ptau`): matricat duhen lidhur brenda
+    qarkut me hash (e njëjta arsye si digjesti `d`). Kushton ~75 kufizime për element × 9 vektorë
+    indeksesh/vlerash × `nnz`: për një qark aplikacioni 2^16 dalin > 100 M kufizime. I papërdorshëm
+    përtej qarqeve lodër.
+  - *PlonK me snarkjs mbi `.ptau`* (setup determinist, pa ceremoni): hash-i i dëshmisë kushton
+    ~400 porta për element; për 2^16 dalin > 25 M porta. I papërdorshëm.
+  - *Spartan/SPARK me HyperKZG* (matricat të angazhuara një herë nga `.ptau`, pa sekrete): rruga e
+    saktë dhe e vetmja që shkallëzon, por është një SNARK i ri holografik (kontrolle memorieje,
+    PCS shumëlineare, verifikues Solidity). Nuk është ndërtuar.
+- [ ] Deri atëherë çelësat Groth16 janë **specifikë për qarkun** (qarku vendimtar përmban `A, B, C`).
+      `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme: vetëm për zhvillim
+- [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
+      grupuara në një kontroll)
+- [ ] Mënyra B për IVC-në rekursive off-chain: akumulatori sekondar (Grumpkin) nuk ka precompile në
+      EVM; kërkon rindërtim të rekursionit (CycleFold) që pjesa në Grumpkin të jetë e vogël
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 
