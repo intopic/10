@@ -19,9 +19,9 @@ kontrata verifikuese në EVM.
 - Depoja: `intopic/10`. Dega e punës: `claude/great-goldberg-oyeeic`.
 - Rregulli i ndjekur: çdo commit shtyhet në degën e punës, dhe kalon në `main`
   vetëm pasi GitHub Actions del plotësisht e gjelbër.
-- `main` është në `008b57e`. Commit-i i fundit në degë (`3cae639`, palosja në
-  grup) ishte ende në CI kur u shkrua ky dokument; nëse CI del e gjelbër,
-  duhet kaluar në `main`.
+- Gjithçka që përshkruhet në këtë dokument, përfshirë palosjen në grup
+  (`verifyFoldedProofBatch`), është në `main` me CI të gjelbër në të dhjetë
+  punët. Dega e punës dhe `main` janë të sinkronizuara.
 - Gjuha: Rust (arkworks 0.5), Solidity 0.8.28 (viaIR, Cancun), pak JavaScript
   për testet e kontratave dhe të WASM-it.
 
