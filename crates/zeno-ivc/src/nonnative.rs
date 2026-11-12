@@ -9,9 +9,12 @@
 //! a + r·x = q·p_S + c
 //! ```
 //!
-//! checked both modulo the native modulus `n` and modulo `2^128`. Since every
-//! term is range-bounded so that both sides are below `n · 2^128`, the two
-//! congruences imply equality over the integers (CRT).
+//! checked both modulo the native modulus `n` and modulo `2^(64·L)`. Since
+//! every term is range-bounded so that both sides are below `n · 2^(64·L)`,
+//! the two congruences imply equality over the integers (CRT). `L` is the
+//! smallest number of limbs (at least 2) for which the bound holds: `L = 2`
+//! for a 128-bit `r` times a 250-bit `x`, `L = 3` once `x` is a full 254-bit
+//! coordinate.
 
 use alloc::vec::Vec;
 use ark_ff::{BigInteger, PrimeField};
@@ -30,6 +33,8 @@ const LIMB: usize = 64;
 /// with this offset as `CARRY_BITS`-bit unsigned integers.
 const CARRY_BITS: usize = 70;
 const CARRY_OFFSET_LOG: usize = 69;
+/// Largest limb count; with it every carry still stays below 2^68.
+const MAX_LIMBS: usize = 4;
 
 fn modulus<F: PrimeField>() -> BigUint {
     BigUint::from_bytes_le(&F::MODULUS.to_bytes_le())
@@ -71,18 +76,22 @@ pub fn pack_bits<F: PrimeField>(bits: &[Boolean<F>]) -> Result<FpVar<F>, Synthes
     Ok(acc)
 }
 
-/// The two least-significant 64-bit limbs of a bit vector.
-fn low_limbs<F: PrimeField>(bits: &[Boolean<F>]) -> Result<[FpVar<F>; 2], SynthesisError> {
-    let limb = |k: usize| -> Result<FpVar<F>, SynthesisError> {
-        let start = (k * LIMB).min(bits.len());
-        let end = ((k + 1) * LIMB).min(bits.len());
-        if start == end {
-            Ok(FpVar::zero())
-        } else {
-            Boolean::le_bits_to_fp(&bits[start..end])
-        }
-    };
-    Ok([limb(0)?, limb(1)?])
+/// The `count` least-significant 64-bit limbs of a bit vector (zero past its end).
+fn low_limbs<F: PrimeField>(
+    bits: &[Boolean<F>],
+    count: usize,
+) -> Result<Vec<FpVar<F>>, SynthesisError> {
+    (0..count)
+        .map(|k| {
+            let start = (k * LIMB).min(bits.len());
+            let end = ((k + 1) * LIMB).min(bits.len());
+            if start == end {
+                Ok(FpVar::zero())
+            } else {
+                Boolean::le_bits_to_fp(&bits[start..end])
+            }
+        })
+        .collect()
 }
 
 /// Returns the little-endian bits of some `c ≡ a + r·x (mod p_S)` with
@@ -101,15 +110,17 @@ pub fn mul_add_mod<F: PrimeField, S: PrimeField>(
     let s_bits = S::MODULUS_BIT_SIZE as usize;
     let one = BigUint::from(1u8);
 
-    // Static range analysis: both sides of the identity are below n·2^128.
+    // Static range analysis: both sides of the identity are below n·2^(64L)
+    // for the smallest number L ≥ 2 of 64-bit limbs for which this holds.
     let lhs_max = (&one << a.len()) + (&one << (r.len() + x.len()));
     let q_bits = (lhs_max.bits() as usize + 1).saturating_sub(s_bits).max(1);
     let rhs_max = ((&one << q_bits) - &one) * &p + (&one << s_bits);
-    let bound = &n << 128;
-    assert!(
-        lhs_max < bound && rhs_max < bound,
-        "non-native range overflow"
-    );
+    let num_limbs = (2..=MAX_LIMBS)
+        .find(|l| {
+            let bound = &n << (LIMB * l);
+            lhs_max < bound && rhs_max < bound
+        })
+        .expect("non-native range overflow");
     assert!(&lhs_max / &p < (&one << q_bits), "quotient does not fit");
 
     // Witnesses: quotient and remainder.
@@ -125,46 +136,72 @@ pub fn mul_add_mod<F: PrimeField, S: PrimeField>(
     let rhs = pack_bits(&q)? * p_native + pack_bits(&c)? - pack_bits(a)?;
     pack_bits(r)?.mul_equals(&pack_bits(x)?, &rhs)?;
 
-    // (2) The identity modulo 2^128, on 64-bit limbs with signed carries.
-    let [a0, a1] = low_limbs(a)?;
-    let [r0, r1] = low_limbs(r)?;
-    let [x0, x1] = low_limbs(x)?;
-    let [q0, q1] = low_limbs(&q)?;
-    let [c0, c1] = low_limbs(&c)?;
+    // (2) The identity modulo 2^(64L), on 64-bit limbs with signed carries:
+    //     t_j = a_j + Σ_i r_i·x_{j−i} − Σ_i q_i·p_{j−i} − c_j, and
+    //     t_0 = k_0·2^64, t_j + k_{j−1} = k_j·2^64.
+    let a_l = low_limbs(a, num_limbs)?;
+    let r_l = low_limbs(r, num_limbs)?;
+    let x_l = low_limbs(x, num_limbs)?;
+    let q_l = low_limbs(&q, num_limbs)?;
+    let c_l = low_limbs(&c, num_limbs)?;
     let p_digits = p.to_u64_digits();
-    let p0 = F::from(p_digits[0]);
-    let p1 = F::from(p_digits.get(1).copied().unwrap_or(0));
-    let t0 = &a0 + &r0 * &x0 - &q0 * p0 - &c0;
-    let t1_partial = &a1 + &r0 * &x1 + &r1 * &x0 - &q0 * p1 - &q1 * p0 - &c1;
+    let p_l: Vec<F> = (0..num_limbs)
+        .map(|j| F::from(p_digits.get(j).copied().unwrap_or(0)))
+        .collect();
+    let t: Vec<FpVar<F>> = (0..num_limbs)
+        .map(|j| {
+            let mut t = a_l[j].clone();
+            for i in 0..=j {
+                t += &r_l[i] * &x_l[j - i];
+            }
+            for i in 0..=j {
+                t -= &q_l[i] * p_l[j - i];
+            }
+            t - &c_l[j]
+        })
+        .collect();
 
     // Carry values, computed over the integers with a positive offset.
     let mask = (&one << LIMB) - &one;
     let offset = &one << CARRY_OFFSET_LOG;
-    let limbs_of = |v: &BigUint| (v & &mask, (v >> LIMB) & &mask);
+    let limbs_of = |v: &BigUint| -> Vec<BigUint> {
+        (0..num_limbs).map(|j| (v >> (LIMB * j)) & &mask).collect()
+    };
     let carries = match (&values, &q_val, &c_val) {
         (Ok((av, rv, xv)), Ok(qv), Ok(cv)) => {
-            let ((a0, a1), (r0, r1), (x0, x1)) = (limbs_of(av), limbs_of(rv), limbs_of(xv));
-            let ((q0, q1), (c0, c1)) = (limbs_of(qv), limbs_of(cv));
-            let (p0, p1) = limbs_of(&p);
-            // k0 = (a0 + r0·x0 − q0·p0 − c0) / 2^64, stored as k0 + offset.
-            let pos0 = (&offset << LIMB) + &a0 + &r0 * &x0;
-            let neg0 = &q0 * &p0 + &c0;
-            let k0 = (pos0 - neg0) >> LIMB;
-            let pos1 = (&offset << LIMB) + &a1 + &r0 * &x1 + &r1 * &x0 + &k0;
-            let neg1 = &q0 * &p1 + &q1 * &p0 + &c1 + &offset;
-            let k1 = (pos1 - neg1) >> LIMB;
-            Ok((k0, k1))
+            let (al, rl, xl) = (limbs_of(av), limbs_of(rv), limbs_of(xv));
+            let (ql, cl, pl) = (limbs_of(qv), limbs_of(cv), limbs_of(&p));
+            let mut ks: Vec<BigUint> = Vec::with_capacity(num_limbs);
+            for j in 0..num_limbs {
+                // k_j = (t_j + k_{j−1}) / 2^64, stored as k_j + offset.
+                let mut pos = (&offset << LIMB) + &al[j];
+                let mut neg = cl[j].clone();
+                for i in 0..=j {
+                    pos += &rl[i] * &xl[j - i];
+                    neg += &ql[i] * &pl[j - i];
+                }
+                if let Some(prev) = ks.last() {
+                    pos += prev;
+                    neg += &offset;
+                }
+                ks.push((pos - neg) >> LIMB);
+            }
+            Ok(ks)
         }
         _ => Err(SynthesisError::AssignmentMissing),
     };
-    let k0_val = carries.as_ref().map(|k| k.0.clone()).map_err(|e| *e);
-    let k1_val = carries.as_ref().map(|k| k.1.clone()).map_err(|e| *e);
     let offset_f = F::from(2u64).pow([CARRY_OFFSET_LOG as u64]);
     let two_64 = F::from(2u64).pow([LIMB as u64]);
-    let k0 = Boolean::le_bits_to_fp(&alloc_bits(cs, &k0_val, CARRY_BITS)?)? - offset_f;
-    let k1 = Boolean::le_bits_to_fp(&alloc_bits(cs, &k1_val, CARRY_BITS)?)? - offset_f;
-    t0.enforce_equal(&(&k0 * two_64))?;
-    (t1_partial + &k0).enforce_equal(&(k1 * two_64))?;
+    let k: Vec<FpVar<F>> = (0..num_limbs)
+        .map(|j| {
+            let k_val = carries.as_ref().map(|k| k[j].clone()).map_err(|e| *e);
+            Ok(Boolean::le_bits_to_fp(&alloc_bits(cs, &k_val, CARRY_BITS)?)? - offset_f)
+        })
+        .collect::<Result<_, SynthesisError>>()?;
+    t[0].enforce_equal(&(&k[0] * two_64))?;
+    for j in 1..num_limbs {
+        (&t[j] + &k[j - 1]).enforce_equal(&(&k[j] * two_64))?;
+    }
 
     Ok(c)
 }
@@ -220,6 +257,19 @@ mod tests {
             let c = mul_add_mod::<F, S>(&cs, &av, &rv, &[Boolean::TRUE]).unwrap();
             assert_eq!(from_bits::<S>(&c), a + r);
             assert!(cs.is_satisfied().unwrap());
+
+            // A full-width x (a curve coordinate) needs a third limb.
+            let x = if case == 1 {
+                -S::from(1u64)
+            } else {
+                S::rand(&mut rng)
+            };
+            let xv = to_bits(&cs, &x, s_bits);
+            let before = cs.num_constraints();
+            let c = mul_add_mod::<F, S>(&cs, &av, &rv, &xv).unwrap();
+            assert_eq!(from_bits::<S>(&c), a + r * x);
+            assert!(cs.is_satisfied().unwrap());
+            assert!(cs.num_constraints() - before < 900);
         }
     }
 
@@ -233,18 +283,22 @@ mod tests {
 
     #[test]
     fn every_witness_of_the_gadget_is_pinned_down() {
+        pinned_down::<ark_pallas::Fr, ark_pallas::Fq>(250);
+        // Three limbs: a full-width BN254 base-field operand.
+        pinned_down::<ark_bn254::Fr, ark_bn254::Fq>(254);
+    }
+
+    fn pinned_down<F: PrimeField, S: PrimeField>(x_bits: usize) {
         // Mutation test: changing any single witness allocated by the gadget
         // (quotient, remainder, carry bits or products) breaks satisfiability.
-        type F = ark_pallas::Fr;
-        type S = ark_pallas::Fq;
         let mut rng = test_rng();
         let cs = ConstraintSystem::<F>::new_ref();
         let (a, r) = (S::rand(&mut rng), S::from(u128::rand(&mut rng)));
-        let x = S::from(u128::rand(&mut rng));
+        let x = S::rand(&mut rng);
         let (av, rv, xv) = (
-            to_bits(&cs, &a, 255),
+            to_bits(&cs, &a, S::MODULUS_BIT_SIZE as usize),
             to_bits(&cs, &r, 128),
-            to_bits(&cs, &x, 250),
+            to_bits(&cs, &x, x_bits),
         );
         let start = cs.num_witness_variables();
         mul_add_mod::<F, S>(&cs, &av, &rv, &xv).unwrap();

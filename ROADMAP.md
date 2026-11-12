@@ -106,19 +106,61 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [ ] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N).
-      Analiza:
-  - EVM nuk ka precompile për Grumpkin; një shumëzim skalar në Solidity kushton ~110–220k gas, pra
-    palosjet janë të mundshme, por hapja e një angazhimi Pedersen me `n` elemente kërkon `n`
-    shumëzime — e pamundur për akumulatorin sekondar aktual (~11k elemente)
-  - rruga që mbyll hendekun: **CycleFold** (qarku në Grumpkin bëhet ~1.5k kufizime) + një **qark
-    mbyllës BN254** që verifikon akumulatorin e vogël Grumpkin (MSM Pedersen brenda qarkut me
-    aritmetikë native Grumpkin + R1CS jo-native) dhe paloset si instanca e fundit BN254, e cila
-    vendoset me `finalizeUniversal`
-  - kostoja e vlerësuar: qark mbyllës ~4–8 M kufizime → SRS universale 2^24–2^25, dhjetëra GB RAM te
-    provuesi, ~2.5 M gas në EVM. E realizueshme në një server, jo në këtë mjedis (15 GB RAM)
-  - hapat: (1) qarku CycleFold dhe palosja e tij brenda qarkut primar; (2) stepper i ri IVC me
-    angazhime KZG në BN254; (3) qarku mbyllës; (4) matje në një makinë me ≥ 64 GB RAM
+- [ ] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N) 🚧.
+      Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
+      kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
+      ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
+      `M`) + një qark mbyllës BN254 i vendosur me `finalizeUniversal`.
+  - [x] **Hapi 1 — qarku CycleFold** (`zeno-ivc::cyclefold::circuit`): `out = p1 + [r]·p2` mbi fushën
+        bazë të BN254, hyrje publike `(r, p1, p2, out)`, identiteti si `(0, 0)`, kontroll që pikat janë
+        në kurbë: **1 344 kufizime, 1 339 variabla**. Teste: identiteti në çdo pozicion, dyfishim në
+        mbledhjen e fundit, dalje e falsifikuar, pika jashtë kurbës, çdo hyrje publike e lidhur
+  - [x] **Hapi 2 — stepper-i CycleFold** (`cyclefold::{augmented, ivc, hyrax}`): qarku primar palos
+        `u` dhe `x` të instancës BN254 në mënyrë native dhe ia delegon `W' = W + r·W_new` dhe
+        `E' = E + r·T` dy instancave CycleFold, që paloset në një akumulator në Grumpkin me angazhime
+        për çdo rresht. Një transkript i vetëm Poseidon për hap jep `r`, `r_1`, `r_2`. Çelësi primar
+        jepet nga thirrësi: hash-to-curve ose fuqitë e një `.ptau` (KZG), të dyja të testuara. Teste
+        fund-më-fund në BN254/Grumpkin dhe Pallas/Vesta, falsifikime të gjendjes dhe të të dy
+        akumulatorëve, dhe një palosje e deleguar e gabuar që e bën akumulatorin të pakënaqshëm
+  - [x] `mul_add_mod` zgjedh vetë numrin e limbeve (2 → 3) kur operandi është një koordinatë e plotë
+        254-bitëshe; për përdorimet ekzistuese kufizimet mbeten të njëjta (test mutacioni për të dyja)
+  - Kompromisi i Hyrax-it, i matur (C kolona; rreshta = ⌈1 344 / C⌉ për `W` dhe për `E`; qarku
+    primar me hap aplikacioni minimal):
+
+    | C | rreshta W/E | kufizime për hap | elemente jo-zero |
+    |---|---|---|---|
+    | 2048 (Pedersen i zakonshëm) | 1/1 | 32 414 | 0.74 M |
+    | 512 | 3/3 | 45 074 | 1.39 M |
+    | 256 | 6/6 | 64 064 | 2.36 M |
+    | 128 | 11/11 | 95 714 | 3.97 M |
+    | 64 | 21/21 | 159 014 | 7.21 M |
+
+    Çdo rresht shton ~3.2k kufizime në **çdo hap** (dy shumëzime skalare Grumpkin dhe hash-et).
+    Krahasim: Nova 2-kurbëshe aktuale kushton ~11.2k (primar) + ~11.2k (sekondar) për hap.
+  - [ ] **Hapi 3 — qarku mbyllës.** Plani, i korrigjuar pas matjeve:
+    - Hyrax jep vetëm *vlerësime* `W̃(r_y)`, `Ẽ(r_x)`. Që akumulatori CycleFold është i kënaqshëm
+      vërtetohet me një sum-check (stil Spartan) mbi `Fq`, që është jo-native në BN254. Sum-check-u
+      dhe vlerësimi i matricave të qarkut CycleFold (fiks për gjithë sistemin) bëhen **në Solidity**,
+      ku `Fq` është native (`mulmod`); qarku mbyllës BN254 bën vetëm hapjen Hyrax
+      (`Σ_i L_i·C_i = Σ_j w'_j·G_j`: 2R shumëzime me bazë të ndryshueshme + C me bazë fikse) dhe
+      hash-in e gjendjes
+    - matur me gadget-et e arkworks (skalarë 254-bitësh): një shumëzim me bazë të ndryshueshme
+      kushton **2 594** kufizime, një me bazë fikse **1 545**. Bërthama e hapjes Hyrax del
+      **208k** kufizime / **11.7 M** elemente jo-zero për C = 64 (R = 21) dhe **255k / 6.8 M** për
+      C = 128 (R = 11). Rreth 20–30× më pak kufizime se 4–8 M, por jo brenda `.ptau` 2^18
+    - vendimtari universal kërkon fuqi ≥ max(m, 2n, elemente jo-zero), pra **dendësia** vendos:
+      2^18 mban qarqe deri në ~2^16 kufizime vetëm nëse matricat janë të rralla. Gadget-et e
+      arkworks futen të plota në kombinime lineare (deri në ~56 elemente për kufizim te shuma e
+      pikave; ~23 te qarku primar, kryesisht Poseidon dhe paketimi i biteve)
+    - parakusht për hapin 3: **gadget-e me peshë të ulët** për Grumpkin (formula afine me çdo
+      ndërmjetës si variabël, MSM me bazë fikse me dritare 2-bitëshe, MSM me dyfishim të
+      përbashkët) dhe rrafshim i Poseidon-it. Vlerësim pas tyre: ~140k kufizime, ~0.7 M elemente
+      jo-zero → `.ptau` 2^20 (skedar publik PPoT, ~1.2 GB)
+    - alternativë që mban `.ptau` 2^18: qarku mbyllës ndahet në copa identike ≤ 2^16 kufizime
+      (secila shton një pjesë të MSM-së te një akumulator pikash në hyrjet publike), të cilat
+      kontrata i palos me mënyrën B ekzistuese (~23–74k gas për copë) dhe i vendos një herë me
+      `finalizeUniversal`
+  - [ ] Hapi 4 — kontrata (`finalizeRecursive`), test në EVM lokale dhe matja e gazit
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 

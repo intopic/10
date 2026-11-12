@@ -24,6 +24,8 @@ sha3.workspace = true
 
 [dev-dependencies]
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
+zeno-ivc = { path = "../zeno-ivc" }
+ark-grumpkin.workspace = true
 
 [features]
 default = ["parallel", "cli"]

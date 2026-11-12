@@ -10,6 +10,7 @@
 
 extern crate alloc;
 
+pub mod cyclefold;
 pub mod ivc_stepper;
 pub mod nonnative;
 pub mod nova_ivc_circuit;

@@ -808,6 +808,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-groth16",
+ "ark-grumpkin",
  "ark-r1cs-std",
  "ark-relations",
  "ark-serialize",
@@ -818,6 +819,7 @@ dependencies = [
  "llull-folder",
  "sha2",
  "sha3",
+ "zeno-ivc",
 ]
 
 [[package]]
@@ -2102,6 +2104,7 @@ dependencies = [
  "llull-folder",
  "num-bigint",
  "rand",
+ "rayon",
  "sha2",
 ]
 

@@ -17,6 +17,7 @@ ark-r1cs-std.workspace = true
 ark-crypto-primitives = { workspace = true, features = ["r1cs"] }
 num-bigint.workspace = true
 sha2.workspace = true
+rayon = { workspace = true, optional = true }
 # CLI-only dependencies
 ark-pallas = { workspace = true, optional = true }
 ark-vesta = { workspace = true, optional = true }
@@ -33,6 +34,7 @@ ark-grumpkin.workspace = true
 [features]
 default = ["parallel", "cli"]
 parallel = [
+    "dep:rayon",
     "llull-folder/parallel",
     "core-r1cs/parallel",
     "ark-ff/parallel",

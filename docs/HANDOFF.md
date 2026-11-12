@@ -131,8 +131,12 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
    sekondar (rreth 11 mijë elemente) kërkon një shumëzim skalar për element.
    Rruga e planifikuar: CycleFold (qarku në Grumpkin bëhet rreth 1.5k
    kufizime) plus një qark mbyllës BN254 që verifikon akumulatorin e vogël
-   Grumpkin dhe vendoset me `finalizeUniversal`. Vlerësim i pamatur: qark
-   mbyllës 4–8 M kufizime, SRS 2^24–2^25, dhjetëra GB RAM, rreth 2.5 M gas.
+   Grumpkin dhe vendoset me `finalizeUniversal`. **Hapat 1–2 janë ndërtuar**
+   (`zeno-ivc::cyclefold`: qarku CycleFold me 1 344 kufizime, akumulator
+   Grumpkin me angazhime Hyrax për çdo rresht, stepper i ri i testuar edhe me
+   çelës KZG). Hapi 3 kërkon më parë gadget-e me peshë të ulët, sepse
+   vendimtari universal varet nga numri i elementeve jo-zero; matjet dhe plani
+   i korrigjuar janë në `ROADMAP.md`.
 2. **Ulje e mëtejshme e gazit të `finalizeUniversal`**: reduktimi i pesë
    pretendimeve të vlerësimit në më pak pika.
 3. **Publikimi**: paketa NPM, imazhi Docker, AAR dhe XCFramework ndërtohen në
