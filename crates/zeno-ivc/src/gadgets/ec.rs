@@ -23,7 +23,7 @@ use ark_ec::{
     short_weierstrass::{Affine, Projective, SWCurveConfig},
     AffineRepr, CurveGroup,
 };
-use ark_ff::{Field, PrimeField, Zero};
+use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
 use ark_r1cs_std::{
     alloc::AllocVar,
     boolean::Boolean,
@@ -41,6 +41,9 @@ pub struct AffineVar<F: PrimeField> {
     pub y: FpVar<F>,
     pub inf: Boolean<F>,
 }
+
+/// Affine coordinates `(x, y)` of a point known not to be the identity.
+type Coords<F> = (FpVar<F>, FpVar<F>);
 
 fn witness<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
@@ -275,7 +278,10 @@ where
 }
 
 /// `[2^(n+1) + 2t + 1]·B` for the `n` little-endian bits of `t`, complete in
-/// `B` (the identity maps to the identity). About `6n + 16` constraints.
+/// `B` (the identity maps to the identity). `6n + 16` constraints while
+/// `n ≤ bits(|G|) − 3`; beyond that the last iterations, where the multiple
+/// approaches the group order, use complete additions (40 constraints each),
+/// so any `n` is sound.
 pub fn scalar_mul_odd<P: SWCurveConfig>(
     cs: &ConstraintSystemRef<P::BaseField>,
     b: &AffineVar<P::BaseField>,
@@ -285,10 +291,10 @@ where
     P::BaseField: PrimeField,
 {
     check_curve::<P>();
-    assert!(
-        t.len() + 3 < P::ScalarField::MODULUS_BIT_SIZE as usize,
-        "the scalar must stay well below the group order"
-    );
+    // Iteration j starts from [k]B with k odd, 3 ≤ k < 2^(j+2), and needs
+    // k ≢ ±1 and 2k ± 1 ≢ 0 (mod |G|): guaranteed while 2^(j+3) ≤ |G|, i.e.
+    // for j ≤ bits(|G|) − 4.
+    let safe = (P::ScalarField::MODULUS_BIT_SIZE as usize).saturating_sub(3);
     // A base that is never the identity; the result is discarded otherwise.
     let g = AffineVar::constant::<P>(&P::GENERATOR);
     let bx = b.inf.select(&g.x, &b.x)?;
@@ -297,24 +303,168 @@ where
     // [3]B: the leading 1 and a forced +1 digit.
     let (dx, dy) = double(cs, &bx, &by)?;
     let (mut ax, mut ay) = add_incomplete(cs, (&dx, &dy), (&bx, &by))?;
-    // acc ← 2·acc + d·B with d = 2t_i − 1, most significant bit first. The
-    // multiple k' of B stays odd with 3 ≤ k' < 2^(n+2): acc ≠ ±D and
-    // acc + D ≠ ±acc, so no slope is ever undetermined.
+    // acc ← 2·acc + d·B with d = 2t_i − 1, most significant bit first; in the
+    // safe range no slope is ever undetermined.
     let one = FpVar::one();
-    for bit in t.iter().rev() {
-        let digit = FpVar::from(bit.clone()).double()? - &one;
-        let yd = &by * digit;
-        let (x, y) = double_and_add(cs, (&ax, &ay), (&bx, &yd))?;
+    let digits: Vec<FpVar<P::BaseField>> = t
+        .iter()
+        .rev()
+        .map(|bit| Ok(&by * (FpVar::from(bit.clone()).double()? - &one)))
+        .collect::<Result<_, SynthesisError>>()?;
+    for yd in digits.iter().take(safe) {
+        let (x, y) = double_and_add(cs, (&ax, &ay), (&bx, yd))?;
         ax = x;
         ay = y;
     }
-    // The multiple is never the identity, so the result is the identity
-    // exactly when B is.
-    Ok(AffineVar {
-        x: b.inf.select(&FpVar::zero(), &ax)?,
-        y: b.inf.select(&FpVar::zero(), &ay)?,
-        inf: b.inf.clone(),
-    })
+    let mut acc = AffineVar {
+        x: ax,
+        y: ay,
+        inf: Boolean::FALSE,
+    };
+    for yd in digits.iter().skip(safe) {
+        let doubled = add::<P>(cs, &acc, &acc)?;
+        let d = AffineVar {
+            x: bx.clone(),
+            y: yd.clone(),
+            inf: Boolean::FALSE,
+        };
+        acc = add::<P>(cs, &doubled, &d)?;
+    }
+    AffineVar::select(&b.inf, &AffineVar::identity(), &acc)
+}
+
+/// The `t` with `2^(n+1) + 2t + 1 ≡ s (mod |S|)` for `n = bits(|S|)`: how a
+/// verifier hands an arbitrary scalar to [`scalar_mul_odd`].
+pub fn odd_t<S: PrimeField>(s: S) -> S {
+    let n = S::MODULUS_BIT_SIZE as u64;
+    let top = S::from(2u64).pow([n + 1]);
+    (s - S::one() - top) * S::from(2u64).inverse().expect("odd modulus")
+}
+
+/// The `bits(|S|)` little-endian bits of [`odd_t`].
+pub fn odd_digits<S: PrimeField>(s: S) -> Vec<bool> {
+    use ark_ff::BigInteger;
+    odd_t(s).into_bigint().to_bits_le()[..S::MODULUS_BIT_SIZE as usize].to_vec()
+}
+
+/// One 2-bit window of a fixed-base multiplication: the constant point
+/// `(d + 2)·4^i·B` for the digit `d = b0 + 2·b1`, as linear combinations of
+/// `1, b0, b1, b0·b1` (one constraint for the product).
+fn window_lookup<P: SWCurveConfig>(
+    table: &[Affine<P>; 4],
+    b0: &Boolean<P::BaseField>,
+    b1: &Boolean<P::BaseField>,
+) -> Result<Coords<P::BaseField>, SynthesisError>
+where
+    P::BaseField: PrimeField,
+{
+    let b01 = FpVar::from(b0 & b1);
+    let (f0, f1) = (FpVar::from(b0.clone()), FpVar::from(b1.clone()));
+    let coord = |c: [P::BaseField; 4]| {
+        FpVar::constant(c[0])
+            + &f0 * (c[1] - c[0])
+            + &f1 * (c[2] - c[0])
+            + &b01 * (c[3] - c[2] - c[1] + c[0])
+    };
+    let xy = |p: &Affine<P>| p.xy().expect("table entries are never the identity");
+    let c: Vec<(P::BaseField, P::BaseField)> = table.iter().map(xy).collect();
+    Ok((
+        coord([c[0].0, c[1].0, c[2].0, c[3].0]),
+        coord([c[0].1, c[1].1, c[2].1, c[3].1]),
+    ))
+}
+
+/// `[s + o]·B` for a constant base `B`, the little-endian bits of `s`, and
+/// the constant offset `o = Σ_i 2·4^i` (returned as the point `[o]·B`).
+///
+/// Window `i` adds `(d_i + 2)·4^i·B`, so before it the running multiple `m`
+/// satisfies `m < 2·4^i ≤` the window's multiple: the incomplete addition
+/// cannot hit `±` its input while `m + 5·4^i < |G|`; the remaining top
+/// windows use complete additions. About 4 constraints per window.
+pub fn fixed_base_mul_offset<P: SWCurveConfig>(
+    cs: &ConstraintSystemRef<P::BaseField>,
+    base: &Affine<P>,
+    bits: &[Boolean<P::BaseField>],
+) -> Result<(AffineVar<P::BaseField>, Projective<P>), SynthesisError>
+where
+    P::BaseField: PrimeField,
+{
+    use num_bigint::BigUint;
+    check_curve::<P>();
+    let order = BigUint::from_bytes_le(&{
+        use ark_ff::BigInteger;
+        P::ScalarField::MODULUS.to_bytes_le()
+    });
+    let mut bits = bits.to_vec();
+    if bits.len() % 2 == 1 {
+        bits.push(Boolean::FALSE);
+    }
+    let mut power = Projective::<P>::from(*base); // 4^i·B
+    let mut offset = Projective::<P>::zero();
+    let mut acc: Option<AffineVar<P::BaseField>> = None;
+    for (i, pair) in bits.chunks(2).enumerate() {
+        let table: [Affine<P>; 4] =
+            core::array::from_fn(|d| (power * P::ScalarField::from(d as u64 + 2)).into_affine());
+        offset += power.double();
+        let (x, y) = window_lookup::<P>(&table, &pair[0], &pair[1])?;
+        acc = Some(match acc {
+            None => AffineVar {
+                x,
+                y,
+                inf: Boolean::FALSE,
+            },
+            Some(prev) => {
+                // m ≤ 5·(4^i − 1)/3 < 2·4^i; incomplete iff m + 5·4^i < |G|.
+                let four_i = BigUint::from(4u8).pow(i as u32);
+                let bound =
+                    (BigUint::from(5u8) * (&four_i - 1u8)) / 3u8 + BigUint::from(5u8) * &four_i;
+                if bound < order {
+                    let (x, y) = add_incomplete(cs, (&prev.x, &prev.y), (&x, &y))?;
+                    AffineVar {
+                        x,
+                        y,
+                        inf: Boolean::FALSE,
+                    }
+                } else {
+                    let entry = AffineVar {
+                        x,
+                        y,
+                        inf: Boolean::FALSE,
+                    };
+                    add::<P>(cs, &prev, &entry)?
+                }
+            }
+        });
+        power.double_in_place();
+        power.double_in_place();
+    }
+    Ok((acc.unwrap_or_else(AffineVar::identity), offset))
+}
+
+/// `Σ_j [s_j]·B_j` for constant bases and the little-endian bits of each
+/// scalar: one offset fixed-base multiplication per base, complete additions
+/// to combine them, and one subtraction of the summed offsets.
+pub fn fixed_base_msm<P: SWCurveConfig>(
+    cs: &ConstraintSystemRef<P::BaseField>,
+    bases: &[Affine<P>],
+    scalars: &[Vec<Boolean<P::BaseField>>],
+) -> Result<AffineVar<P::BaseField>, SynthesisError>
+where
+    P::BaseField: PrimeField,
+{
+    assert_eq!(bases.len(), scalars.len());
+    let mut total = AffineVar::identity();
+    let mut offset = Projective::<P>::zero();
+    for (base, bits) in bases.iter().zip(scalars) {
+        let (product, o) = fixed_base_mul_offset::<P>(cs, base, bits)?;
+        total = add::<P>(cs, &total, &product)?;
+        offset += o;
+    }
+    add::<P>(
+        cs,
+        &total,
+        &AffineVar::constant::<P>(&(-offset).into_affine()),
+    )
 }
 
 /// `A + [2^(n+1) + 2t + 1]·B`, complete in `A` and `B`.
@@ -364,8 +514,8 @@ pub fn odd_scalar_var<F: PrimeField>(t: &[Boolean<F>]) -> Result<FpVar<F>, Synth
 mod tests {
     use super::*;
     use ark_ec::PrimeGroup;
+    use ark_ff::One;
     use ark_ff::UniformRand;
-    use ark_ff::{AdditiveGroup, One};
     use ark_relations::r1cs::{ConstraintSystem, SynthesisMode};
     use ark_std::{rand::Rng, test_rng};
     use core_r1cs::ark_bridge::{assignment_from_cs, shape_from_cs};
@@ -539,5 +689,101 @@ mod tests {
             m.num_constraints
         );
         assert!(nnz < 6 * m.num_constraints, "{nnz} non-zero entries");
+    }
+
+    fn bits_of(cs: &ConstraintSystemRef<F>, v: &[bool]) -> Vec<Boolean<F>> {
+        v.iter()
+            .map(|b| Boolean::new_witness(cs.clone(), || Ok(*b)).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn full_width_scalar_multiplication_with_complete_tail() {
+        // Any scalar s, handed over as the digits of t with
+        // 2^255 + 2t + 1 ≡ s: the tail near the group order is complete, so
+        // s = 0 and s = ±1 work too.
+        type S = ark_grumpkin::Fr;
+        let mut rng = test_rng();
+        let scalars = [
+            S::from(0u64),
+            S::from(1u64),
+            -S::from(1u64),
+            S::from(2u64),
+            S::rand(&mut rng),
+            S::rand(&mut rng),
+        ];
+        for s in scalars {
+            for b in points() {
+                let cs = new_cs();
+                let pb = AffineVar::new_witness::<P>(&cs, &b).unwrap();
+                let t = bits_of(&cs, &odd_digits(s));
+                let start = cs.num_witness_variables();
+                let before = cs.num_constraints();
+                let out = scalar_mul_odd::<P>(&cs, &pb, &t).unwrap();
+                assert_eq!(out.value::<P>().unwrap(), b * s, "[{s}]·{b}");
+                assert!(cs.is_satisfied().unwrap());
+                assert!(cs.num_constraints() - before < 6 * 254 + 200);
+                if !b.is_zero() && !s.is_zero() && s != S::from(1u64) && s != -S::from(1u64) {
+                    // The only free witnesses are the unused inverse hints of
+                    // the equality tests inside the tail's complete doublings
+                    // (x1 = x2 and y1 = y2): two per doubling, value 1.
+                    let (w, _) = assignment_from_cs(&cs).unwrap();
+                    let free = free_witnesses(&cs, start);
+                    let tail = 254 - (S::MODULUS_BIT_SIZE as usize - 3);
+                    assert!(free.len() <= 2 * (tail + 1), "{free:?}");
+                    assert!(free.iter().all(|&i| w[i] == F::one()), "{free:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_base_msm_matches_native() {
+        use ark_ff::BigInteger;
+        type S = ark_grumpkin::Fr;
+        let mut rng = test_rng();
+        let bases: Vec<Affine<P>> = (0..4).map(|_| G::rand(&mut rng).into_affine()).collect();
+        let cases: Vec<Vec<Vec<bool>>> = vec![
+            // Random canonical scalars.
+            (0..4)
+                .map(|_| S::rand(&mut rng).into_bigint().to_bits_le()[..254].to_vec())
+                .collect(),
+            // Zero, n − 1, and 254 one-bits (≥ n: taken modulo n).
+            vec![
+                vec![false; 254],
+                (-S::from(1u64)).into_bigint().to_bits_le()[..254].to_vec(),
+                vec![true; 254],
+                vec![true; 3],
+            ],
+        ];
+        for scalars in cases {
+            let cs = new_cs();
+            let vars: Vec<Vec<Boolean<F>>> = scalars.iter().map(|v| bits_of(&cs, v)).collect();
+            let start = cs.num_witness_variables();
+            let before = cs.num_constraints();
+            let out = fixed_base_msm::<P>(&cs, &bases, &vars).unwrap();
+            let expected: G = bases
+                .iter()
+                .zip(&scalars)
+                .map(|(b, v)| *b * S::from_le_bytes_mod_order(&bits_to_bytes(v)))
+                .sum();
+            assert_eq!(out.value::<P>().unwrap(), expected);
+            assert!(cs.is_satisfied().unwrap());
+            let per_base = (cs.num_constraints() - before) / bases.len();
+            assert!(per_base < 600, "{per_base} constraints per base");
+            if scalars[0].len() == 254 && scalars[0].iter().any(|b| *b) {
+                assert_eq!(free_witnesses(&cs, start), Vec::<usize>::new());
+            }
+        }
+    }
+
+    fn bits_to_bytes(v: &[bool]) -> Vec<u8> {
+        let mut out = vec![0u8; v.len().div_ceil(8)];
+        for (i, b) in v.iter().enumerate() {
+            if *b {
+                out[i / 8] |= 1 << (i % 8);
+            }
+        }
+        out
     }
 }

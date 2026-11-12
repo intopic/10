@@ -22,6 +22,7 @@ pub const CF_COLUMNS: usize = 128;
 
 pub mod augmented;
 pub mod circuit;
+pub mod closing;
 pub mod hyrax;
 pub mod ivc;
 

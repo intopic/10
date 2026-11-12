@@ -203,6 +203,63 @@ pub fn cf_check<C: CurveGroup>(
     Ok(())
 }
 
+/// The table `eq(r, k)` for all `k ∈ {0,1}^len(r)`, `r[0]` being the most
+/// significant bit (the convention of `decider_zk::sumcheck::eq_table`).
+pub fn eq_table<F: PrimeField>(r: &[F]) -> Vec<F> {
+    let mut table = alloc::vec![F::one()];
+    for ri in r {
+        let mut next = Vec::with_capacity(table.len() * 2);
+        for v in &table {
+            let hi = *v * ri;
+            next.push(*v - hi);
+            next.push(hi);
+        }
+        table = next;
+    }
+    table
+}
+
+/// The opening of `ṽ(r)` for a vector `v` with `C` columns, zero-padded to
+/// `2^len(r)` entries, `r = (r_row ‖ r_col)` with `len(r_col) = log C`:
+/// returns the row weights `L = eq(r_row, ·)` (one per committed row), the
+/// combined row `v' = Σ_i L_i·row_i` and `ṽ(r) = ⟨v', eq(r_col, ·)⟩`.
+pub fn hyrax_open<F: PrimeField>(v: &[F], cols: usize, r: &[F]) -> (Vec<F>, Vec<F>, F) {
+    assert!(cols.is_power_of_two());
+    let log_cols = cols.trailing_zeros() as usize;
+    assert!(r.len() >= log_cols, "point too short");
+    assert!(
+        v.len() <= 1 << r.len(),
+        "vector longer than the point allows"
+    );
+    let (r_row, r_col) = r.split_at(r.len() - log_cols);
+    let rows = v.len().div_ceil(cols);
+    let l: Vec<F> = eq_table(r_row)[..rows].to_vec();
+    let mut combined = alloc::vec![F::zero(); cols];
+    for (row, weight) in v.chunks(cols).zip(&l) {
+        for (c, x) in combined.iter_mut().zip(row) {
+            *c += *weight * x;
+        }
+    }
+    let eval = combined
+        .iter()
+        .zip(eq_table(r_col))
+        .map(|(a, b)| *a * b)
+        .sum();
+    (l, combined, eval)
+}
+
+/// The commitment side of the opening: `Σ_i L_i·C_i = Σ_j v'_j·G_j`.
+pub fn hyrax_check<C: CurveGroup>(
+    key: &HyraxKey<C>,
+    rows: &[C],
+    weights: &[C::ScalarField],
+    combined: &[C::ScalarField],
+) -> bool {
+    assert_eq!(rows.len(), weights.len());
+    let lhs: C = rows.iter().zip(weights).map(|(c, l)| *c * l).sum();
+    lhs == key.ck.commit(combined, C::ScalarField::zero())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +285,23 @@ mod tests {
         // Each row uses the same generators: row i of `a` alone, moved to
         // row 0, commits to the same point.
         assert_eq!(key.commit(&a[8..16])[0], ca[1]);
+    }
+
+    #[test]
+    fn opening_matches_the_multilinear_extension() {
+        let mut rng = test_rng();
+        let key = HyraxKey::<G>::setup(b"test", 8);
+        // 29 entries: 4 committed rows of 8, the last one partial; 5 variables.
+        let v: Vec<F> = (0..29).map(|_| F::rand(&mut rng)).collect();
+        let r: Vec<F> = (0..5).map(|_| F::rand(&mut rng)).collect();
+        let (l, combined, eval) = hyrax_open(&v, 8, &r);
+        let direct: F = v.iter().zip(eq_table(&r)).map(|(a, b)| *a * b).sum();
+        assert_eq!(eval, direct);
+        let rows = key.commit(&v);
+        assert!(hyrax_check(&key, &rows, &l, &combined));
+        // A different combined row does not open the same rows.
+        let mut forged = combined.clone();
+        forged[3] += F::from(1u64);
+        assert!(!hyrax_check(&key, &rows, &l, &forged));
     }
 }

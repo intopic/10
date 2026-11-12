@@ -117,6 +117,29 @@ jobs:
           ZENO_PTAU: ${{ github.workspace }}/ppot_0080_18.ptau
         run: node contracts/test/verifier.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
 
+  recursive-closing:
+    name: Recursive IVC — closing circuit decided over PPoT 2^20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache the public Powers-of-Tau file (PSE PPoT, 2^20 powers, 1.2 GB)
+        id: ptau20
+        uses: actions/cache@v4
+        with:
+          path: ppot_0080_20.ptau
+          key: ppot_0080_20-560412532a120514
+      - name: Download the public Powers-of-Tau file
+        if: steps.ptau20.outputs.cache-hit != 'true'
+        run: curl -sSf --retry 3 -o ppot_0080_20.ptau https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_20.ptau
+      - name: Check the file's SHA-256
+        run: echo "560412532a1205145d5f21585274fb2cef61273496ddc7186aec855aab01a8cd  ppot_0080_20.ptau" | sha256sum -c -
+      - name: CycleFold IVC, closing circuit (137k constraints) proven and verified by the universal decider
+        env:
+          ZENO_PTAU: ${{ github.workspace }}/ppot_0080_20.ptau
+        run: cargo test --release -p evm-verifier --test closing_decider -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
+
   cloud-prover:
     name: ZenoLlull-Cloud-Prover — Docker image + smoke test
     runs-on: ubuntu-latest

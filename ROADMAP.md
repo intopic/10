@@ -165,9 +165,25 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       arkworks futen të plota në kombinime lineare (deri në ~56 elemente për kufizim te shuma e
       pikave; ~23 te qarku primar, kryesisht Poseidon dhe paketimi i biteve)
     - vendim: C = 128 (8 + 8 rreshta), `.ptau` 2^20 në CI me `actions/cache`, një provë e vetme
-      për `finalizeUniversal`. Mbetet: MSM me bazë fikse (128 baza) dhe MSM me dyfishim të
-      përbashkët (16 rreshta) me peshë të ulët, qarku mbyllës dhe matja e tij (synimi ~140k
-      kufizime, ~0.7 M elemente jo-zero)
+      për `finalizeUniversal`
+    - [x] gadget-e për hapjen: shumëzim me skalar të plotë 254-bitësh (ELM në zonën e sigurt,
+      adicione të plota në 3 iteracionet e fundit pranë rendit të grupit; skalari jepet si `t` me
+      `2^255 + 2t + 1 ≡ s`, të cilin verifikuesi e llogarit vetë) dhe MSM me bazë fikse me dritare
+      2-bitëshe me zhvendosje +2 (shumat e pjesshme janë shumëfisha të ndryshëm të bazës; vetëm
+      dritarja e sipërme është e plotë): ~545 kufizime për bazë. Teste kundrejt aritmetikës native
+      (përfshirë `s = 0`, `±1`, skalarë ≥ rendi) dhe mutacion
+    - [x] `hyrax_open` / `hyrax_check` native (rreshti i kombinuar `v' = Σ L_i·row_i`,
+      `ṽ(r) = ⟨v', eq(r_col)⟩`) dhe `closing::ClosingCircuit`: rillogarit `h = H(vk, i, z_0, z_i,
+      U, U_cf)` dhe kontrollon `Σ_i s_i·C_i = Σ_j c_j·G_j` për peshat `s = (γ·L_W, L_E)` dhe rreshtin
+      e kombinuar `c = γ·w' + e'`, të gjitha hyrje publike. Matur mbi një akumulator real:
+      **136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike** → reference string 2^20
+    - [x] i vendosur nga vendimtari universal mbi `ppot_0080_20.ptau` (ceremonia publike PSE):
+      ngarkim + validim 5.7 s, **provim 26.3 s, provë 24.1 KB**, verifikim native 12 ms,
+      **memorie maksimale 1.94 GB**. CI e ekzekuton në çdo shtytje (`recursive-closing`), skedari
+      1.2 GB ruhet me `actions/cache` dhe kontrollohet me SHA-256
+    - [ ] mbetet: sum-check-u Spartan mbi `Fq` për akumulatorin CycleFold dhe vlerësimi i matricave
+      të tij (Rust + Solidity), vendimi i akumulatorit primar me `finalizeUniversal`, dhe palosja e
+      instancës së fundit në zinxhir
   - [ ] Hapi 4 — kontrata (`finalizeRecursive`), test në EVM lokale dhe matja e gazit
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
