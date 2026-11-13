@@ -12,8 +12,8 @@
 //!    universal decider for the primary circuit.
 //! 2. `U_cf` is decided by a Spartan-style argument over `Fq` (native for the
 //!    EVM's `mulmod`): an outer and an inner sum-check, with the matrices of
-//!    the CycleFold circuit (fixed for the whole system, published as a data
-//!    contract) evaluated by the verifier. What remains are the evaluations
+//!    the CycleFold circuit (fixed for the whole system) evaluated by the
+//!    verifier from their uniform structure ([`crate::cf_uniform`]). What remains are the evaluations
 //!    `Ẽ(r_x)` and `W̃(r_y')`, opened by the Hyrax rows: the prover sends the
 //!    combined rows `e'` and `w'`, the verifier checks their inner products,
 //!    and the group equation `Σ_i s_i·C_i = Σ_j c_j·G_j` is left to
@@ -27,6 +27,7 @@
 //!    opening cover both, with one pairing check.
 
 use crate::{
+    cf_uniform::{entries, CfDims, CfUniform},
     kzg::Srs,
     point_words, relaxed_words,
     universal::{
@@ -37,9 +38,9 @@ use crate::{
     },
     word, DeciderError, EvmParams, Word,
 };
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
 use ark_bn254::{Fq, Fr, G1Projective as G1};
-use ark_ff::{BigInteger, One, PrimeField, UniformRand, Zero};
+use ark_ff::{One, UniformRand, Zero};
 use ark_relations::r1cs::{ConstraintSystem, SynthesisMode};
 use ark_std::rand::RngCore;
 use core_r1cs::{
@@ -54,6 +55,7 @@ use sha3::{Digest, Keccak256};
 use zeno_ivc::{
     cyclefold::{
         augmented::{absorb_cf_acc, absorb_primary},
+        circuit::CF_SLOTS,
         closing::ClosingCircuit,
         hyrax::{eq_table, hyrax_open, CfRelaxedInstance, CfRelaxedWitness},
         CycleFoldAccumulator, CycleFoldParams, CF_COLUMNS, CF_IO_LEN,
@@ -69,138 +71,17 @@ type Grumpkin = ark_grumpkin::Projective;
 /// Domain separator of the recursive decider's transcript.
 pub const DOMAIN: &[u8] = b"zeno-llull/recursive-decider/v1";
 
-fn log2_ceil(v: usize) -> usize {
-    v.next_power_of_two().trailing_zeros() as usize
-}
-
-/// Dimensions of the Spartan argument over the CycleFold circuit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CfDims {
-    pub log_m: usize,
-    pub log_n: usize,
-}
-
-impl CfDims {
-    pub fn of(shape: &R1CSShape<Fq>) -> Self {
-        Self {
-            log_m: log2_ceil(shape.num_constraints.max(4)),
-            log_n: log2_ceil(shape.num_vars.max(shape.num_io + 1).max(4)),
-        }
-    }
-}
-
-/// Column of `Z = (W, x, u)` inside the padded `(W ‖ (u, x))` of length `2n`.
-fn remap(shape: &R1CSShape<Fq>, n: usize, col: usize) -> usize {
-    if col < shape.num_vars {
-        col
-    } else if col == shape.num_vars + shape.num_io {
-        n
-    } else {
-        n + 1 + (col - shape.num_vars)
-    }
-}
-
-/// One non-zero matrix entry: `(matrix, row, column in the padded Z, value)`.
-fn entries(shape: &R1CSShape<Fq>) -> Vec<(usize, usize, usize, Fq)> {
-    let n = 1 << CfDims::of(shape).log_n;
-    let mut out = Vec::new();
-    for (k, m) in [&shape.a, &shape.b, &shape.c].iter().enumerate() {
-        for row in 0..m.num_rows {
-            for e in m.row_ptr[row]..m.row_ptr[row + 1] {
-                out.push((k, row, remap(shape, n, m.col_idx[e]), m.values[e]));
-            }
-        }
-    }
-    out.sort_by_key(|&(k, row, col, _)| (row, k, col));
-    out
-}
-
-/// The CycleFold matrices as the contract reads them (the code of a data
-/// contract, after a leading `0x00` that makes it non-executable), laid out
-/// so that every entry costs the verifier two loads, one `mulmod` and one
-/// `addmod`:
-///
-/// * a 32-byte header: `log_m`, `log_n`, `num_io` (one byte each), then the
-///   numbers of distinct values, of groups and of entries (two bytes each,
-///   big-endian);
-/// * the distinct values, 32 bytes each (big-endian `Fq`);
-/// * the groups, 4 bytes each: `half·128 + matrix (1 byte) ‖ value index
-///   (1 byte) ‖ number of entries (2 bytes)` — all entries of one matrix with
-///   one value in one half of the padded `Z = (W ‖ (u, x))`;
-/// * the entries, group after group, 4 bytes each: `32·row (2 bytes) ‖
-///   32·(column mod n) (2 bytes)`, the byte offsets into the tables
-///   `eq(r_x, ·)` and `eq(r_y[1..], ·)`.
-///
-/// The verifier then computes `Σ_groups ρ^matrix·value·(r_y0 or 1 − r_y0)·
-/// Σ_entries eq(r_x, row)·eq(r_y[1..], col mod n) = (A + ρB + ρ²C)(r_x, r_y)`.
-pub fn cf_matrix_data(shape: &R1CSShape<Fq>) -> Vec<u8> {
-    let dims = CfDims::of(shape);
-    assert!(
-        dims.log_m <= 10 && dims.log_n < 11,
-        "CycleFold circuit too large for the encoding"
-    );
-    let mut index: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
-    let mut values: Vec<Fq> = Vec::new();
-    let n = 1 << dims.log_n;
-    let mut groups: BTreeMap<(usize, usize, usize), Vec<(usize, usize)>> = BTreeMap::new();
-    for (k, row, col, v) in entries(shape) {
-        let key = v.into_bigint().to_bytes_be();
-        let idx = *index.entry(key).or_insert_with(|| {
-            values.push(v);
-            values.len() - 1
-        });
-        groups
-            .entry((col / n, k, idx))
-            .or_default()
-            .push((row, col % n));
-    }
-    let num_entries: usize = groups.values().map(Vec::len).sum();
-    assert!(
-        values.len() <= 256 && groups.len() < 1 << 16 && num_entries < 1 << 16,
-        "too many values, groups or entries"
-    );
-    let mut data = alloc::vec![0u8; 32];
-    data[0] = dims.log_m as u8;
-    data[1] = dims.log_n as u8;
-    data[2] = shape.num_io as u8;
-    data[3..5].copy_from_slice(&(values.len() as u16).to_be_bytes());
-    data[5..7].copy_from_slice(&(groups.len() as u16).to_be_bytes());
-    data[7..9].copy_from_slice(&(num_entries as u16).to_be_bytes());
-    for v in &values {
-        data.extend_from_slice(&word(v));
-    }
-    for (&(half, k, idx), list) in &groups {
-        data.extend_from_slice(&[(half << 7 | k) as u8, idx as u8]);
-        data.extend_from_slice(&(list.len() as u16).to_be_bytes());
-    }
-    for list in groups.values() {
-        for &(row, col) in list {
-            data.extend_from_slice(&((32 * row) as u16).to_be_bytes());
-            data.extend_from_slice(&((32 * col) as u16).to_be_bytes());
-        }
-    }
-    data
-}
-
-/// The data contract's code (`0x00 ‖ data`) and its `extcodehash`.
-pub fn cf_data_code(shape: &R1CSShape<Fq>) -> (Vec<u8>, Word) {
-    let mut code = alloc::vec![0u8];
-    code.extend(cf_matrix_data(shape));
-    let hash = Keccak256::digest(&code).into();
-    (code, hash)
-}
-
 /// Public parameters: the CycleFold IVC, the universal-decider keys of its
 /// primary circuit and of the closing circuit (over one reference string),
-/// and the hash of the CycleFold matrix data.
+/// and the CycleFold matrices as uniform records with their hash.
 pub struct RecursiveParams {
     pub ivc: CycleFoldParams<Bn254Config, GrumpkinConfig>,
     pub primary: EvmParams,
     pub primary_key: CircuitKey,
     pub closing: EvmParams,
     pub closing_key: CircuitKey,
-    pub cf_code: Vec<u8>,
-    pub cf_code_hash: Word,
+    pub cf_matrices: CfUniform,
+    pub cf_hash: Word,
 }
 
 impl RecursiveParams {
@@ -255,25 +136,30 @@ impl RecursiveParams {
             srs,
             dims,
         );
-        let (cf_code, cf_code_hash) = cf_data_code(&ivc.cf_shape);
+        // The verifier evaluates the CycleFold matrices from their records,
+        // with the Hyrax tables over the slot bits.
+        assert_eq!(CF_SLOTS, CF_COLUMNS, "slots are Hyrax columns");
+        let cf_matrices =
+            CfUniform::from_shape(&ivc.cf_shape).expect("the CycleFold circuit is uniform");
+        let cf_hash = cf_matrices.hash();
         Ok(Self {
             ivc,
             primary,
             primary_key,
             closing,
             closing_key,
-            cf_code,
-            cf_code_hash,
+            cf_matrices,
+            cf_hash,
         })
     }
 
     /// The system's on-chain identity:
-    /// `keccak256(primary vk ‖ closing vk ‖ CycleFold data code hash)`.
+    /// `keccak256(primary vk ‖ closing vk ‖ CycleFold matrices hash)`.
     pub fn system_id(&self) -> Word {
         let mut h = Keccak256::new();
         h.update(self.primary.vk);
         h.update(self.closing.vk);
-        h.update(self.cf_code_hash);
+        h.update(self.cf_hash);
         h.finalize().into()
     }
 }
@@ -344,7 +230,7 @@ impl RecursiveProof {
 /// The transcript prefix shared by prover and verifier, up to the first fold.
 fn start(params: &RecursiveParams, st: Statement) -> KeccakTranscript {
     let mut tr = KeccakTranscript::new(DOMAIN);
-    tr.absorb_words(&[params.primary.vk, params.closing.vk, params.cf_code_hash]);
+    tr.absorb_words(&[params.primary.vk, params.closing.vk, params.cf_hash]);
     let mut claim = alloc::vec![word(&Fr::from(st.i))];
     claim.extend(st.z0.iter().chain(st.zi).map(word));
     tr.absorb_words(&claim);
@@ -370,16 +256,6 @@ fn padded(v: &[Fq], len: usize) -> Vec<Fq> {
     let mut out = v.to_vec();
     out.resize(len, Fq::zero());
     out
-}
-
-/// `(A + ρB + ρ²C)(r_x, r_y)`, evaluated by the verifier from the entries.
-fn matrix_eval(shape: &R1CSShape<Fq>, rho: Fq, rx: &[Fq], ry: &[Fq]) -> Fq {
-    let (ex, ey) = (eq_table(rx), eq_table(ry));
-    let powers = [Fq::one(), rho, rho * rho];
-    entries(shape)
-        .iter()
-        .map(|&(k, row, col, v)| powers[k] * v * ex[row] * ey[col])
-        .sum()
 }
 
 /// `Σ_i IO_i·eq(r, i)` with `IO = (u, x, 0, …)`.
@@ -693,7 +569,7 @@ pub fn verify(params: &RecursiveParams, p: &RecursiveProof) -> bool {
     };
     let z_eval =
         (Fq::one() - ry[0]) * p.cf.v_w + ry[0] * io_eval(p.cf_acc.u, &p.cf_acc.x, &ry[1..]);
-    if claim != matrix_eval(&ivc.cf_shape, rho, &rx, &ry) * z_eval {
+    if claim != params.cf_matrices.eval(rho, &rx, &ry) * z_eval {
         return false;
     }
     tr.absorb_fq(&[p.cf.v_w]);

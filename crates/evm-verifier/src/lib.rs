@@ -19,6 +19,7 @@
 extern crate alloc;
 
 pub mod abi;
+pub mod cf_uniform;
 pub mod decider_circuit;
 pub mod kzg;
 pub mod recursive;

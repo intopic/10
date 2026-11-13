@@ -14,10 +14,11 @@
 pub const T_BITS: usize = 127;
 
 /// Default number of columns of the CycleFold row commitments. With the
-/// 936-constraint CycleFold circuit it gives 8 rows for `W` and 8 for `E`:
-/// the smallest closing circuit (8 + 8 variable-base and 128 fixed-base
-/// multiplications), for about 2.5k constraints per row and step (66.8k
-/// constraints per step in all, 468k non-zero entries).
+/// 943-constraint CycleFold circuit (936 witness variables) it gives 8 rows
+/// for `W` and 8 for `E`: the smallest closing circuit (8 + 8 variable-base
+/// and 128 fixed-base multiplications), for about 2.5k constraints per row
+/// and step (66.8k constraints per step in all, 468k non-zero entries). It is
+/// also the number of slots of the circuit's uniform layout.
 pub const CF_COLUMNS: usize = 128;
 
 pub mod augmented;

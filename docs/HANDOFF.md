@@ -38,7 +38,7 @@ kontrata verifikuese në EVM.
 | `crates/zeno-ivc/src/gadgets` | Gadget-e me peshë të ulët: pika afine, shumëzim skalar ELM, MSM me bazë fikse, Poseidon me gjendje të rrafshuar |
 | `crates/decider-zk` | Maskimi zero-knowledge, sum-check, IPA, prova e shkurtër transparente `CompressedIvcProof`, CLI `zeno-decider` |
 | `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, qarku vendimtar Groth16, **vendimtari universal** (`src/universal/`), **vendimtari rekursiv** (`src/recursive.rs`) |
-| `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë), `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal, edhe `verifyDeferred`), `ZenoBatchedDecider.sol` (një provë universale për disa qarqe) dhe `ZenoRecursiveVerifier.sol` (`finalizeRecursive`), me teste në EVM lokale |
+| `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë), `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal, edhe `verifyDeferred`), `ZenoBatchedDecider.sol` (një provë universale për disa qarqe) dhe `ZenoRecursiveVerifier.sol` (`finalizeRecursive`, me matricat CycleFold në `ZenoCycleFoldShape.sol`, të gjeneruar), me teste në EVM lokale |
 | `crates/sdk-bindings`, `sdk/wasm` | Hyrje nga Circom (`.r1cs` / `.wtns`), API WebAssembly, paketa `@zenollull/wasm-sdk` (me variant me shumë fije) |
 | `crates/mobile-ffi`, `sdk/native`, `sdk/android` | SDK native me UniFFI: lidhje Swift, Kotlin, Python; paketim AAR dhe XCFramework |
 | `crates/zeno-license` | Çelësa licence të nënshkruar Ed25519 dhe mjeti i shitësit |
@@ -71,9 +71,9 @@ janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxh
 **D. IVC rekursive me CycleFold + `finalizeRecursive`.** `zeno-ivc::cyclefold` +
 `evm-verifier::recursive` + `ZenoRecursiveVerifier.sol`. Provuesi palos N hapa
 jashtë zinxhirit; kontrata vendos gjendjen përfundimtare me një thirrje, me
-kosto **të pavarur nga N** (4.69 M gas). Reference string: `.ptau` publike me
+kosto **të pavarur nga N** (3.57 M gas). Reference string: `.ptau` publike me
 2^20 fuqi. Nuk ka çelësa për qark. Sistemi identifikohet me `keccak256(vk
-primar ‖ vk mbyllës ‖ hash i të dhënave CycleFold)`, që kushdo e rillogarit.
+primar ‖ vk mbyllës ‖ hash i matricave CycleFold)`, që kushdo e rillogarit.
 
 ## 5. Matjet
 
@@ -94,8 +94,8 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | `finalizeWithProof` (Groth16, zhvillim) | rreth 456k gas, 544 bajt |
 | Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 936 kufizime / 66 791 kufizime, 468k elemente jo-zero |
 | Qarku mbyllës | 136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike; 28 s provim, 1.94 GB memorie |
-| Provuesi i `finalizeRecursive` (pas hapave) | rreth 45 s; verifikim native 23 ms |
-| `finalizeRecursive` | **4.69 M gas** (4.06 M ekzekutim + 39 KB calldata), i njëjtë për çdo numër hapash; një provë universale e grupuar për qarkun primar dhe atë mbyllës |
+| Provuesi i `finalizeRecursive` (pas hapave) | rreth 40 s; verifikim native 14 ms |
+| `finalizeRecursive` | **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata), i njëjtë për çdo numër hapash; një provë universale e grupuar për qarkun primar dhe atë mbyllës; matricat CycleFold nga struktura uniforme (230 rekorde) |
 
 Gazi i `finalizeUniversal` rritet logaritmikisht: rreth 89k gas dhe 1.25 KB
 për çdo dyfishim të qarkut. Matja për 65 536 kufizime është bërë mbi skedarin
@@ -110,7 +110,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 | Koha < 50 ms për hap në 2^16 | **e pa arritur** në 4 vCPU; pronari e ka pranuar vlerën aktuale |
 | "4 000 kufizime për hap" | **e pa arritur** (11 217); pronari e ka pranuar |
 | Provë < 4 KB | vetëm në mënyrën Groth16 të zhvillimit; mënyrat e tjera 6.7–21.6 KB |
-| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 4.69 M (mënyra D, për çdo N) |
+| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 3.57 M (mënyra D, për çdo N) |
 
 ## 7. Çfarë duhet ditur para se të prekësh kodin
 
@@ -139,9 +139,13 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   127-bitësh. Kjo e bën të pamundur me ndërtim çdo rast përjashtimor të
   formulave jo të plota të gadget-eve. Mos e ndrysho formën pa ndryshuar edhe
   argumentin në `gadgets::ec`.
-- **Kontrata e të dhënave CycleFold** lidhet me `extcodehash` në transkript dhe
-  në identitetin e sistemit. Një kontratë tjetër jep identitet tjetër, që
-  pala besuese duhet ta refuzojë.
+- **Matricat CycleFold** janë konstante në `ZenoCycleFoldShape.sol`, e gjeneruar
+  nga `evm-verifier::cf_uniform` (testi `cf_uniform` dështon nëse qarku
+  ndryshon pa e rigjeneruar). Hash-i i tyre hyn në transkript dhe në
+  identitetin e sistemit. Rekordet nxirren nga matricat dhe kontrollohen që i
+  riprodhojnë saktësisht. Renditja e qarkut (`circuit::layout`) e bën
+  përshkrimin të vogël, por saktësia nuk varet prej saj: një ndryshim në qark
+  jep thjesht më shumë rekorde eksplicite.
 - **SHA-256 i `ppot_0080_20.ptau`** në CI u llogarit nga shkarkimi më 12
   nëntor 2026. Mbron nga ndryshimet e mëvonshme, jo nga skedari origjinal.
   Struktura e fuqive kontrollohet gjithsesi nga `Srs::from_ptau`.
@@ -150,10 +154,10 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 
 ## 8. Çfarë nuk është bërë
 
-1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 4.69 M): vlerësimi i
-   matricave CycleFold me strukturën uniforme të qarkut (~0.65 M + tabelat
-   `eq`), dhe qarku mbyllës nën 2^19 elemente jo-zero (kryesisht RAM dhe kohë
-   e provuesit). Dy provat universale janë bashkuar tashmë në një.
+1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 3.57 M, nga të
+   cilat vendimtari i grupuar 2.22 M): qarku mbyllës nën 2^19 elemente
+   jo-zero (kryesisht RAM dhe kohë e provuesit). Dy provat universale janë
+   bashkuar në një dhe matricat CycleFold vlerësohen nga struktura uniforme.
 2. **Ulje e mëtejshme e gazit të `finalizeUniversal`**: reduktimi i pesë
    pretendimeve të vlerësimit në më pak pika.
 3. **Publikimi**: paketa NPM, imazhi Docker, AAR dhe XCFramework ndërtohen në
@@ -175,9 +179,9 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 4. **Publikimi dhe çelësat**: tokeni i organizatës `@zenollull` në NPM dhe
    çelësi privat i licencave të shitësit nuk ekzistojnë ende; mjeti
    `zeno-license keygen` e gjeneron të dytin.
-5. **Zinxhiri i synuar**: mënyra D kushton 4.69 M gas, i njëjtë për çdo N.
+5. **Zinxhiri i synuar**: mënyra D kushton 3.57 M gas, i njëjtë për çdo N.
    Mënyra B kushton 0.8–1.9 M për vendimin final plus rreth 23k gas për çdo
-   hap, prandaj mënyra D del më e lirë kur N kalon rreth 125–170 hapa. Të dyja
+   hap, prandaj mënyra D del më e lirë kur N kalon rreth 75–120 hapa. Të dyja
    janë praktike kryesisht në L2.
 
 ## 10. Si ndërtohet dhe testohet

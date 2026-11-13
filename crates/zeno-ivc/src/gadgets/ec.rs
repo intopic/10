@@ -148,13 +148,13 @@ impl<F: PrimeField> AffineVar<F> {
     }
 }
 
-fn div<F: Field>(num: F, den: F) -> F {
+pub(crate) fn div<F: Field>(num: F, den: F) -> F {
     den.inverse().map(|inv| num * inv).unwrap_or_else(F::zero)
 }
 
 /// `2·(x, y)` for a point other than the identity (`y ≠ 0` on a prime-order
 /// curve). Four constraints.
-fn double<F: PrimeField>(
+pub(crate) fn double<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
     x: &FpVar<F>,
     y: &FpVar<F>,

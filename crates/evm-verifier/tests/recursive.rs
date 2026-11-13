@@ -40,13 +40,13 @@ fn recursive_ivc_is_decided_and_forgeries_are_rejected() {
     let params = RecursiveParams::setup(&step, b"recursive-test", &srs).unwrap();
     drop(srs);
     println!(
-        "setup: {:.1} s; primary circuit {} constraints (dims {:?}), closing {} (dims {:?}), CycleFold data {} bytes",
+        "setup: {:.1} s; primary circuit {} constraints (dims {:?}), closing {} (dims {:?}), CycleFold matrices {} records",
         t.elapsed().as_secs_f64(),
         params.primary.shape.num_constraints,
         params.primary_key.dims,
         params.closing.shape.num_constraints,
         params.closing_key.dims,
-        params.cf_code.len()
+        params.cf_matrices.records.len()
     );
 
     let mut ivc = CycleFoldAccumulator::new(&params.ivc, vec![Fr::from(3u64)]).unwrap();

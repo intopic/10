@@ -25,6 +25,7 @@ function compile() {
     sources: {
       "ZenoBatchedDecider.sol": read("ZenoBatchedDecider.sol"),
       "ZenoRecursiveVerifier.sol": read("ZenoRecursiveVerifier.sol"),
+      "ZenoCycleFoldShape.sol": read("ZenoCycleFoldShape.sol"),
     },
     settings: {
       optimizer: { enabled: true, runs: 200 },
@@ -69,18 +70,13 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   const fx = JSON.parse(execFileSync(FIXTURE_BIN, args, { encoding: "utf8", maxBuffer: 1 << 28 }));
   console.log(`prover               : ${((Date.now() - t0) / 1000).toFixed(1)} s for ${fx.steps} steps`);
 
-  // The CycleFold matrices live in a data contract: initcode returning `0x00 ‖ data`.
-  const code = fx.cfCode.slice(2);
-  const codeLen = code.length / 2;
-  assert.ok(codeLen <= 24576, "CycleFold data exceeds the contract size limit");
-  const dataInit = "0x61" + codeLen.toString(16).padStart(4, "0") + "80600a3d393df3" + code;
-  const data = await create(dataInit, "CycleFold data");
+  // The CycleFold matrices are compiled into the verifier (ZenoCycleFoldShape).
   const decider = await create("0x" + compiled.decider.evm.bytecode.object, "batched decider");
-  const verifierInit =
-    "0x" + compiled.recursive.evm.bytecode.object +
-    word(BigInt(decider.address.toString())) + word(BigInt(data.address.toString()));
+  const verifierInit = "0x" + compiled.recursive.evm.bytecode.object + word(BigInt(decider.address.toString()));
   const verifier = await create(verifierInit, "recursive verifier");
-  console.log(`deployment           : ${verifier.gas} gas (verifier), ${decider.gas} gas (batched decider), ${data.gas} gas (CycleFold data, ${codeLen} bytes)`);
+  const runtime = compiled.recursive.evm.deployedBytecode.object.length / 2;
+  assert.ok(runtime <= 24576, "the verifier exceeds the contract size limit");
+  console.log(`deployment           : ${verifier.gas} gas (verifier, ${runtime} bytes), ${decider.gas} gas (batched decider)`);
 
   const call = async (dataHex) => {
     const bytes = hexToBytes(dataHex);
@@ -94,6 +90,8 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   };
 
   // ---- The honest decision --------------------------------------------------
+  const shape = await call("0x" + sel["cfShapeHash()"]);
+  assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
   const res = await call(fx.calldata);
   assert.ok(res.ok, "finalizeRecursive reverted");
   assert.equal(res.ret, fx.systemId, "system id");

@@ -234,8 +234,8 @@ fn recursive(steps: usize, rounds: usize, ptau: Option<&str>, rng: &mut StdRng) 
         key
     };
     println!(
-        "{{\"cfCode\":\"{}\",\"systemId\":\"{}\",\"decidedKey\":\"{}\",\"claim\":\"{}\",\"steps\":{},\"calldata\":\"{}\",\"starts\":[{}],\"lengths\":[{}],\"primaryConstraints\":{},\"closingConstraints\":{},\"proofBytes\":{}}}",
-        hex(&params.cf_code),
+        "{{\"cfHash\":\"{}\",\"systemId\":\"{}\",\"decidedKey\":\"{}\",\"claim\":\"{}\",\"steps\":{},\"calldata\":\"{}\",\"starts\":[{}],\"lengths\":[{}],\"primaryConstraints\":{},\"closingConstraints\":{},\"proofBytes\":{}}}",
+        hex(&params.cf_hash),
         hex(&params.system_id()),
         hex(&decided_key),
         hex(&claim.concat()),

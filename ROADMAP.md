@@ -106,14 +106,14 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **4.69 M gas** për çdo N (6.17 M para bashkimit të provave).
+- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold).
       Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
       kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
       ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
       `M`) + një qark mbyllës BN254 i vendosur me `finalizeUniversal`.
   - [x] **Hapi 1 — qarku CycleFold** (`zeno-ivc::cyclefold::circuit`): `out = p1 + [r]·p2` mbi fushën
         bazë të BN254, hyrje publike `(r, p1, p2, out)`, identiteti si `(0, 0)`, kontroll që pikat janë
-        në kurbë: **936 kufizime** (1 344 me gadget-et e arkworks). Teste: identiteti në çdo pozicion, dyfishim në
+        në kurbë: **936 kufizime** (1 344 me gadget-et e arkworks; 943 me paraqitjen uniforme të Optimizimit 1). Teste: identiteti në çdo pozicion, dyfishim në
         mbledhjen e fundit, dalje e falsifikuar, pika jashtë kurbës, çdo hyrje publike e lidhur
   - [x] **Hapi 2 — stepper-i CycleFold** (`cyclefold::{augmented, ivc, hyrax}`): qarku primar palos
         `u` dhe `x` të instancës BN254 në mënyrë native dhe ia delegon `W' = W + r·W_new` dhe
@@ -184,11 +184,11 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
   - [x] **Hapi 4 — `finalizeRecursive`** (`evm-verifier::recursive`, `contracts/ZenoRecursiveVerifier.sol`):
     - një transkript Keccak: palosja e instancës së fundit në `U` dhe maskimi (ZK) me palosje NIFS në
       zinxhir; argument Spartan mbi `Fq` për `U_cf` (sum-check i jashtëm dhe i brendshëm, matricat e
-      qarkut CycleFold — fikse për gjithë sistemin — në një kontratë të dhënash 22 KB, të lidhura me
-      `extcodehash`); kontrolli i prodhimeve të brendshme të rreshtave Hyrax; hyrja publike e qarkut
+      qarkut CycleFold — fikse për gjithë sistemin — fillimisht në një kontratë të dhënash 22 KB, të
+      lidhura me `extcodehash`, tani nga struktura uniforme, Optimizimi 1); kontrolli i prodhimeve të brendshme të rreshtave Hyrax; hyrja publike e qarkut
       mbyllës e ndërtuar nga kontrata vetë; dy prova universale (`verifyDeferred`) me **një** thirrje
       `ecPairing` (kombinim linear me sfidë nga transkripti)
-    - identiteti i sistemit: `keccak256(vk primar ‖ vk mbyllës ‖ hash i të dhënave CycleFold)`; çdo
+    - identiteti i sistemit: `keccak256(vk primar ‖ vk mbyllës ‖ hash i matricave CycleFold)`; çdo
       pretendim i vendosur regjistrohet në `decided`
     - Rust: `prove` / `verify` (pasqyrë e kontratës); test me 20 falsifikime. EVM lokale: 26
       falsifikime me një fjalë në çdo pjesë të calldata-s, të gjitha të refuzuara
@@ -221,9 +221,25 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
     - `finalizeRecursive`: **4 693 653 gas** = 4.06 M ekzekutim + 39 KB calldata (nga 6.17 M dhe 61 KB);
       vendimtari i grupuar kushton 2.22 M në vend të 1.38 M + 2.01 M; 31 falsifikime me një fjalë në
       calldata, të gjitha të refuzuara; provuesi rreth 46 s (qarku primar mbushet deri në 2^20)
-  - [ ] Optimizimi 1 — vlerësimi i matricave CycleFold nga struktura uniforme e qarkut (127 iteracione
-        identike) në vend të 4 380 elementeve (~0.65 M gas + tabelat `eq` me 1024 elemente); pa
-        kontratën e të dhënave
+  - [x] **Optimizimi 1 — matricat CycleFold nga struktura uniforme** (`zeno-ivc::cyclefold::circuit::layout`,
+        `evm-verifier::cf_uniform`, `contracts/ZenoCycleFoldShape.sol`):
+    - qarku CycleFold i rirenditur sipas *tipit*: variabla `κ·128 + j` dhe kufizimi `ρ·128 + j` janë
+      roli `κ` / `ρ` i iteracionit `j` (bit, shifër, `λ, x₃, μ, x₄, y₄`; booleaniteti, shifra, pesë
+      kufizimet ELM), slot-i 127 bosh, pjesa e parregullt (pikat hyrëse, `r`, `B`, `[3]B`, mbledhja e
+      plotë) pas blloqeve: **943 kufizime, 936 variabla**, po 8 + 8 rreshta Hyrax, qarku primar dhe ai
+      mbyllës të pandryshuar
+    - shablloni **nxirret** nga matricat (slot-i 1 i çdo tipi; diferencat si elemente eksplicite; shumat
+      `Σ_j c·2^(127−j)·t_j` si një rekord i paketuar) dhe kontrollohet që i riprodhon saktësisht:
+      **230 rekorde (32 shabllon + 197 eksplicite + 1 i paketuar) në 1.6 KB** në vend të 4 380 elementeve
+      në 22 KB; test që vlerësimi përputhet me MLE-në direkte, test që biblioteka Solidity e gjeneruar
+      është e qarkut aktual
+    - verifikuesi llogarit vetëm tabelat `eq` mbi bitet e slot-it (128) dhe të tipit (8) të `r_x` dhe
+      `r_y` — po ato që i duhen për rreshtat Hyrax — dhe shumat `D₀ = Σ X_j·Y_j`, `D₁ = Σ X_j·Y_(j−1)`,
+      `Σ X_j`, `Σ 2^(127−j)·Y_j`; asnjë tabelë me 1024 elemente, asnjë kontratë të dhënash
+      (`constructor(decider)`; rekordet janë konstante në kod, hash-i i tyre në identitetin e sistemit)
+    - `finalizeRecursive`: **3 566 872 gas** = 2.93 M ekzekutim + 39 KB calldata (nga 4.69 M); vetë
+      verifikuesi para vendimtarit të grupuar 0.57 M (nga ~1.69 M), vendimtari 2.22 M, `ecPairing` 0.12 M;
+      kontrata 13.8 KB; 31 falsifikime, të gjitha të refuzuara; provuesi rreth 39 s
   - [ ] Optimizimi 2 — qarku mbyllës nën 2^19 elemente jo-zero. MSM-ja me bazë fikse (dritare 2-bitëshe
         me tabela konstante, tashmë) mban 456k nga 782k; rruga: qarku CycleFold ≤ 512 kufizime (sfida në
         formë endomorfizmi) që lejon C = 64 me po 8 + 8 rreshta
