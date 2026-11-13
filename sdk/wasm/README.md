@@ -7,7 +7,7 @@ BN254/Grumpkin. Funksioni i hapit jepet si qark Circom me ndërfaqen
 ```js
 const { ZenoLlullProver, ZenoLlullVerifier } = require("@zenollull/wasm-sdk");
 
-const prover = new ZenoLlullProver(r1csBytes, ["3"]);   // gjendja fillestare z0
+const prover = new ZenoLlullProver(licenseKey, r1csBytes, ["3"]);   // licenca dhe gjendja fillestare z0
 prover.proveStep(wtnsBytes);                            // një herë për çdo hap
 const proof = prover.finalize();                        // provë zero-knowledge
 
@@ -15,7 +15,15 @@ const st = new ZenoLlullVerifier(r1csBytes).verify(proof);  // hedh gabim nëse 
 console.log(st.steps, st.z0, st.zi);
 ```
 
-Ndërtimi dhe testimi:
+Provuesi punon vetëm me një `EnterpriseLicenseKey` të vlefshme. Licenca kontrollohet
+kundrejt çelësit publik të shitësit të ngulitur në paketë dhe orës së sistemit; kuota
+`maxSteps` e licencës zbatohet në çdo hap. `verifyLicense(key)` kthen çfarë jep licenca.
+
+Paketa e lëshimit ndërtohet me `ZENO_VENDOR_PUBLIC_KEY=<hex>`. Pa të, paketa përdor
+çelësin e zhvillimit (`developmentBuild: true`), për të cilin kushdo lëshon licenca me
+`zeno-license issue --dev`.
+
+Ndërtimi dhe testimi (`ZENO_TEST_LICENSE` është një licencë zhvillimi):
 
 ```bash
 ./scripts/build-wasm-sdk.sh

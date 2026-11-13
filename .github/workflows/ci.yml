@@ -25,6 +25,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --workspace --no-default-features -- -D warnings
+      # Mode C (Groth16) is development only and off by default; keep it building.
+      - run: cargo clippy -p evm-verifier --all-targets --features dev-groth16 -- -D warnings
 
   test:
     name: tests
@@ -69,10 +71,16 @@ jobs:
       - run: ./scripts/build-wasm-sdk.sh
       - name: IVC over a Circom circuit in WebAssembly, memory <= 512 MiB
         run: |
+          # The package is built without a vendor key, so it checks licenses
+          # against the public development key (`--dev`); a license signed
+          # by any other key must be refused.
           cargo build --release -p zeno-license
-          eval "$(./target/release/zeno-license keygen)"
-          export ZENO_LICENSE_PRIVATE_KEY ZENO_LICENSE_PUBLIC_KEY
-          export ZENO_TEST_LICENSE="$(./target/release/zeno-license issue --customer ci --plan enterprise --days 1)"
+          L=./target/release/zeno-license
+          export ZENO_TEST_LICENSE="$($L issue --dev --customer ci --plan enterprise --days 1)"
+          export ZENO_QUOTA_LICENSE="$($L issue --dev --customer ci --plan trial --days 1 --max-steps 2)"
+          eval "$($L keygen)"
+          export ZENO_LICENSE_PRIVATE_KEY
+          export ZENO_FOREIGN_LICENSE="$($L issue --customer ci --plan enterprise --days 1)"
           node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Multi-threaded build (Web Workers) on nightly
         run: |
@@ -83,6 +91,7 @@ jobs:
           cd sdk/wasm
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
+          export ZENO_TEST_LICENSE="$(../../target/release/zeno-license issue --dev --customer ci --plan enterprise --days 1)"
           node test/browser-threads.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: npm pack (publish-ready tarball)
         run: npm pack
@@ -179,11 +188,13 @@ jobs:
       - name: IVC + succinct proof + license through the generated bindings
         run: |
           cargo build --release -p zeno-license
-          eval "$(./target/release/zeno-license keygen)"
+          L=./target/release/zeno-license
+          DEV="$($L issue --dev --customer ci --plan enterprise --days 1)"
+          QUOTA="$($L issue --dev --customer ci --plan trial --days 1 --max-steps 2)"
+          eval "$($L keygen)"
           export ZENO_LICENSE_PRIVATE_KEY
-          python3 sdk/native/test/test_sdk.py \
-            "$(./target/release/zeno-license issue --customer ci --plan enterprise --days 1)" \
-            "$ZENO_LICENSE_PUBLIC_KEY" | tee -a "$GITHUB_STEP_SUMMARY"
+          FOREIGN="$($L issue --customer ci --plan enterprise --days 1)"
+          python3 sdk/native/test/test_sdk.py "$DEV" "$QUOTA" "$FOREIGN" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Type-check the generated Swift bindings
         run: |
           cd sdk/native/dist/swift

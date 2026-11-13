@@ -21,7 +21,11 @@ wasm-bindgen = "=0.2.130"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"
 wasm-bindgen-rayon = { version = "1.3", optional = true, features = ["no-bundler"] }
+
+[dev-dependencies]
+zeno-license = { path = "../zeno-license" }
 
 [features]
 default = ["batch-affine-msm"]

@@ -115,6 +115,14 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
     vetëm publikim informativ. Kushdo e rillogarit identitetin nga qarku dhe `.ptau`
   - CI shkarkon `.ptau` publike (me cache dhe kontroll SHA-256) dhe mat 2^16 në çdo ekzekutim
 - [ ] Ulje e mëtejshme e gazit: reduktimi i pesë pretendimeve në më pak pika shumëlineare
+- [x] **Forcim pas riauditimit** (num_io, vendimtar i pandryshueshëm, kodime kanonike):
+  - `num_io` është fjala e 24-t e çelësit të qarkut dhe pjesë e `vk`; të dy vendimtarët kërkojnë
+    `acc.length == 5 + num_io` dhe thithin gjithë çelësin (edhe `H` dhe `[τ]₂`) në transkript. Më parë
+    një sesion me aritet më të madh se i qarkut dilte `decided` me gjendje të pakufizuar; test regresi
+    në Rust (dy qarqe me të njëjtat matrica, identitete të ndryshme) dhe në EVM (`MalformedInput`)
+  - `universalDecider` është `immutable` (konstruktor); `setUniversalDecider` u hoq
+  - `finalizeRecursive` refuzon skalarë jo-kanonikë në `state` dhe `cfProof` (3.64 M gas, +0.08 M)
+  - mënyra C (Groth16) jashtë prodhimit: feature `dev-groth16`, kontrata `dev/ZenoLlullVerifierDevGroth16.sol`
 - [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
@@ -277,10 +285,20 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] Test fund-më-fund në Node.js në CI: 25 hapa, provë ZK, verifikues i pavarur, kufi memorie
 - [x] `zeno-license`: `EnterpriseLicenseKey` i nënshkruar me Ed25519, verifikim offline vetëm me
       çelësin publik; mjet shitësi `zeno-license keygen | issue | verify`; `verifyLicense` në WASM
+- [x] **Licencë e detyrueshme në SDK** (`sdk_bindings::api::LicensedProver`, e përbashkët për WASM,
+      Swift, Kotlin, Python): çelësi publik i shitësit ngulitet në ndërtim (`ZENO_VENDOR_PUBLIC_KEY`);
+      thirrësi nuk jep dot as çelës, as orë; kuota `max_steps` e nënshkruar në licencë zbatohet në çdo
+      hap. Pa variabël, ndërtimi përdor çelësin publik të zhvillimit dhe e deklaron (`developmentBuild`)
 - [x] `ZenoLlull-Cloud-Prover` (axum): `POST /v1/sessions`, `POST /v1/fold-step`,
       `POST /v1/finalize-snark`, `GET /v1/usage`; licenca është kredenciali i API-së (pa bazë çelësash)
-- [x] Matje pay-per-proof për klient me regjistër të lidhur me hash (SHA-256), që zbulon çdo
-      fshirje ose ndryshim; rikthehet pas rinisjes
+- [x] Matje pay-per-proof për klient me regjistër të lidhur me hash (SHA-256), që zbulon ndryshimet
+      dhe fshirjet në mes; rikthehet pas rinisjes. Prerja e fundit dhe rishkrimi i plotë dallohen vetëm
+      kundrejt `log_head` të ruajtur diku tjetër (kthehet nga `GET /v1/usage`)
+- [x] **Forcim i Cloud Prover pas riauditimit**: licenca kontrollohet para leximit të trupit; kufij
+      për `num_wires` dhe kufizimet e deklaruara para çdo alokimi (një `.r1cs` 100-bajtëshe me 2^32
+      tela e rrëzonte procesin); faturim brenda punës bllokuese (edhe kur klienti shkëputet) dhe asgjë
+      nuk jepet kur regjistri nuk shkruhet; rezervim atomik i sesionit; kufi global i punëve paralele
+      (503); asnjë kyç i pritur në handler-a (409 për sesion të zënë); `catch_unwind` — 8 teste
 - [x] `Dockerfile` + test tymi në CI kundrejt kontejnerit
 - [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
 - [x] SDK native me UniFFI (`crates/mobile-ffi`): një API Rust → lidhje Swift, Kotlin dhe Python;

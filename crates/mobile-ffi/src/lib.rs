@@ -2,20 +2,16 @@
 //! (Kotlin) and Python, generated from this single Rust API with UniFFI.
 //!
 //! ```python
-//! prover = Prover(r1cs_bytes, ["3"])
+//! prover = Prover(license_key, r1cs_bytes, ["3"])
 //! prover.prove_step(wtns_bytes)          # once per step
 //! proof = prover.finalize()              # succinct zero-knowledge proof
 //! statement = Verifier(r1cs_bytes).verify(proof)
 //! ```
 
-use ark_ff::PrimeField;
-use sdk_bindings::{circom::SdkError, CircomIvc, CircomParams, Fr};
-use std::{
-    str::FromStr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
+use sdk_bindings::{api, circom::SdkError, CircomParams};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, MutexGuard,
 };
 
 uniffi::setup_scaffolding!();
@@ -27,7 +23,7 @@ pub enum ZenoError {
     InvalidInput { reason: String },
     /// A proof or prover state failed verification.
     VerificationFailed { reason: String },
-    /// The license key is invalid or expired.
+    /// The license key is invalid or expired, or its quota is used up.
     License { reason: String },
 }
 
@@ -48,23 +44,10 @@ impl From<SdkError> for ZenoError {
         let reason = e.to_string();
         match e {
             SdkError::Ivc(_) | SdkError::MalformedProof => Self::VerificationFailed { reason },
+            SdkError::License(_) | SdkError::QuotaExceeded { .. } => Self::License { reason },
             _ => Self::InvalidInput { reason },
         }
     }
-}
-
-fn parse_state(z: &[String]) -> Result<Vec<Fr>, ZenoError> {
-    z.iter()
-        .map(|s| {
-            Fr::from_str(s).map_err(|_| ZenoError::InvalidInput {
-                reason: format!("`{s}` is not a decimal field element"),
-            })
-        })
-        .collect()
-}
-
-fn state_strings(z: &[Fr]) -> Vec<String> {
-    z.iter().map(|f| f.into_bigint().to_string()).collect()
 }
 
 /// The public statement proven by a proof: `zi = F^steps(z0)`.
@@ -81,50 +64,62 @@ pub struct License {
     pub customer: String,
     pub plan: String,
     pub expires_at: u64,
+    /// Largest number of steps one prover may fold; `None`: unlimited.
+    pub max_steps: Option<u64>,
+    /// `true` when the library was built without a vendor key and checks
+    /// licenses against the public development key.
+    pub development_build: bool,
 }
 
-/// Incremental prover for a Circom step circuit (BN254/Grumpkin).
+/// Incremental prover for a Circom step circuit (BN254/Grumpkin). It runs
+/// only under a valid license key, checked against the vendor key compiled
+/// into the library.
 #[derive(uniffi::Object)]
 pub struct Prover {
-    inner: Mutex<CircomIvc>,
+    inner: Mutex<api::LicensedProver>,
+}
+
+impl Prover {
+    /// A panic in one call must not make every later call panic too.
+    fn lock(&self) -> MutexGuard<'_, api::LicensedProver> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 #[uniffi::export]
 impl Prover {
-    /// `r1cs`: the compiled step circuit; `z0`: initial state as decimal strings.
+    /// `license`: the `EnterpriseLicenseKey`; `r1cs`: the compiled step
+    /// circuit; `z0`: initial state as decimal strings.
     #[uniffi::constructor]
-    pub fn new(r1cs: Vec<u8>, z0: Vec<String>) -> Result<Self, ZenoError> {
-        let ivc = CircomIvc::new(&r1cs, parse_state(&z0)?)?;
+    pub fn new(license: String, r1cs: Vec<u8>, z0: Vec<String>) -> Result<Self, ZenoError> {
         Ok(Self {
-            inner: Mutex::new(ivc),
+            inner: Mutex::new(api::LicensedProver::new(&license, &r1cs, &z0)?),
         })
     }
 
     /// Folds one more step, given its Circom witness (`.wtns` bytes).
     pub fn prove_step(&self, wtns: Vec<u8>) -> Result<(), ZenoError> {
-        let mut ivc = self.inner.lock().expect("prover lock");
-        Ok(ivc.prove_step(&wtns, &mut rand::rngs::OsRng)?)
+        Ok(self.lock().prove_step(&wtns)?)
     }
 
     /// Checks the prover's own state.
     pub fn verify(&self) -> Result<(), ZenoError> {
-        Ok(self.inner.lock().expect("prover lock").verify()?)
+        Ok(self.lock().verify()?)
     }
 
     /// Number of steps folded so far.
     pub fn steps(&self) -> u64 {
-        self.inner.lock().expect("prover lock").acc.i
+        self.lock().steps()
     }
 
     /// Current state `z_i` as decimal strings.
     pub fn state(&self) -> Vec<String> {
-        state_strings(&self.inner.lock().expect("prover lock").acc.zi)
+        self.lock().state()
     }
 
     /// Produces a succinct zero-knowledge proof of the computation so far.
     pub fn finalize(&self) -> Result<Vec<u8>, ZenoError> {
-        let ivc = self.inner.lock().expect("prover lock");
-        Ok(ivc.finalize(&mut rand::rngs::OsRng)?)
+        Ok(self.lock().finalize()?)
     }
 }
 
@@ -148,11 +143,11 @@ impl Verifier {
     /// Verifies a proof and returns the statement it proves.
     pub fn verify(&self, proof: Vec<u8>) -> Result<Statement, ZenoError> {
         self.verifications.fetch_add(1, Ordering::Relaxed);
-        let statement = self.params.verify_proof(&proof)?.statement;
+        let st = api::statement_of(&self.params.verify_proof(&proof)?);
         Ok(Statement {
-            steps: statement.i,
-            z0: state_strings(&statement.z0),
-            zi: state_strings(&statement.zi),
+            steps: st.steps,
+            z0: st.z0,
+            zi: st.zi,
         })
     }
 
@@ -162,22 +157,16 @@ impl Verifier {
     }
 }
 
-/// Verifies an `EnterpriseLicenseKey` against the vendor's public key (hex)
-/// at Unix time `now` (seconds).
+/// Verifies an `EnterpriseLicenseKey` against the vendor key compiled into
+/// the library, at the current time.
 #[uniffi::export]
-pub fn verify_license(
-    key: String,
-    vendor_public_key: String,
-    now: u64,
-) -> Result<License, ZenoError> {
-    let err = |e: zeno_license::LicenseError| ZenoError::License {
-        reason: e.to_string(),
-    };
-    let public = zeno_license::parse_key_hex(&vendor_public_key).map_err(err)?;
-    let claims = zeno_license::verify(&key, &public, now).map_err(err)?;
+pub fn verify_license(key: String) -> Result<License, ZenoError> {
+    let info = api::check_license(&key)?;
     Ok(License {
-        customer: claims.customer,
-        plan: claims.plan,
-        expires_at: claims.expires_at,
+        customer: info.customer,
+        plan: info.plan,
+        expires_at: info.expires_at,
+        max_steps: info.max_steps,
+        development_build: info.development_build,
     })
 }

@@ -117,8 +117,8 @@ contract ZenoRecursiveVerifier {
     }
 
     /// @notice Decides a final IVC state; reverts if any check fails.
-    /// @param primaryKey universal decider key of the primary circuit (23 words).
-    /// @param closingKey universal decider key of the closing circuit (23 words).
+    /// @param primaryKey universal decider key of the primary circuit (24 words).
+    /// @param closingKey universal decider key of the closing circuit (24 words).
     /// @param state `[i, k, z₀[k], zᵢ[k], U(6), u(3), comm_T(2), mask(6),
     /// mask_T(2), U_cf rows of W, rows of E (2 words each), U_cf.u, U_cf.x]`.
     /// @param cfProof `[outer sum-check, claims(4), inner sum-check, W(r_y'),
@@ -131,7 +131,7 @@ contract ZenoRecursiveVerifier {
         uint256[] calldata cfProof,
         uint256[] calldata deciderProof
     ) external returns (bytes32 systemId) {
-        if (primaryKey.length != 23 || closingKey.length != 23) revert MalformedInput();
+        if (primaryKey.length != 24 || closingKey.length != 24) revert MalformedInput();
         // Both universal proofs must be over the same [τ]₂.
         for (uint256 k = 19; k < 23; ++k) {
             if (primaryKey[k] != closingKey[k]) revert MalformedInput();
@@ -146,6 +146,7 @@ contract ZenoRecursiveVerifier {
         if (cfProof.length != 3 * d.logM + 4 + 2 * (d.logN + 1) + 1 + 2 * COLS + 2) {
             revert MalformedInput();
         }
+        _canonical(d, l, state, cfProof);
 
         bytes32 tr = DOMAIN;
         tr = _absorb(tr, abi.encodePacked(vkP, vkC, ZenoCycleFoldShape.HASH));
@@ -232,6 +233,25 @@ contract ZenoRecursiveVerifier {
         l.cf = l.maskT + 2;
         l.cfU = l.cf + 2 * (d.rowsW + d.rowsE);
         l.length = l.cfU + 1 + d.io;
+    }
+
+    /// @dev Every scalar is given in canonical form (below its modulus), so
+    /// that a claim and a proof have one encoding. Coordinates of BN254
+    /// points are checked by the precompiles; coordinates of the CycleFold
+    /// rows are elements of `F_r`, scalars of the CycleFold accumulator and
+    /// every word of the CycleFold argument elements of `F_q`.
+    function _canonical(Dims memory d, Layout memory l, uint256[] calldata state, uint256[] calldata p)
+        private
+        pure
+    {
+        bool ok = true;
+        for (uint256 i = 2; i < l.acc; ++i) ok = ok && state[i] < R;
+        ok = ok && state[l.acc + 2] < R && state[l.acc + 5] < R && state[l.last + 2] < R;
+        ok = ok && state[l.mask + 2] < R && state[l.mask + 5] < R;
+        for (uint256 i = l.cf; i < l.cfU; ++i) ok = ok && state[i] < R;
+        for (uint256 i = l.cfU; i < l.length; ++i) ok = ok && state[i] < Q;
+        for (uint256 i = 0; i < p.length; ++i) ok = ok && p[i] < Q;
+        if (!ok || d.arity == 0) revert MalformedInput();
     }
 
     // ------------------------------------------------------------------

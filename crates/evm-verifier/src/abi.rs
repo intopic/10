@@ -1,10 +1,15 @@
 //! Minimal Solidity ABI encoding for the calls of `ZenoLlullVerifier`.
 
-use crate::{point_words, word, EvmParams, MaskProof, OnChainDeciderProof, StepProof, Word};
+#[cfg(feature = "dev-groth16")]
+use crate::OnChainDeciderProof;
+use crate::{point_words, word, EvmParams, MaskProof, StepProof, Word};
 use alloc::vec::Vec;
 use ark_bn254::Fr;
+#[cfg(feature = "dev-groth16")]
 use ark_bn254::{Bn254, Fq, G1Affine, G2Affine};
+#[cfg(feature = "dev-groth16")]
 use ark_ec::AffineRepr;
+#[cfg(feature = "dev-groth16")]
 use ark_groth16::VerifyingKey;
 use sha3::{Digest, Keccak256};
 
@@ -109,6 +114,7 @@ pub fn finalize(session: &Word, mask: &MaskProof) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "dev-groth16")]
 fn g1_words(p: &G1Affine) -> [Word; 2] {
     match p.xy() {
         Some((x, y)) => [word(&x), word(&y)],
@@ -116,6 +122,7 @@ fn g1_words(p: &G1Affine) -> [Word; 2] {
     }
 }
 
+#[cfg(feature = "dev-groth16")]
 /// A G2 point in the pairing precompile's order: `x.c1, x.c0, y.c1, y.c0`.
 fn g2_words(p: &G2Affine) -> [Word; 4] {
     match p.xy() {
@@ -124,6 +131,7 @@ fn g2_words(p: &G2Affine) -> [Word; 4] {
     }
 }
 
+#[cfg(feature = "dev-groth16")]
 /// The decider key passed to `finalizeWithProof`:
 /// `[H, [τ]₂, α, β, γ, δ, IC…]`. Panics if `params` is not a KZG setup.
 pub fn decider_key(params: &EvmParams, vk: &VerifyingKey<Bn254>) -> Vec<Word> {
@@ -141,6 +149,7 @@ pub fn decider_key(params: &EvmParams, vk: &VerifyingKey<Bn254>) -> Vec<Word> {
     words
 }
 
+#[cfg(feature = "dev-groth16")]
 /// `registerDevDeciderKey(bytes32 vk, bytes32 keyHash)` (Groth16 development mode).
 pub fn register_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
     let mut hasher = Keccak256::new();
@@ -153,6 +162,7 @@ pub fn register_circuit(vk: &Word, key: &[Word]) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "dev-groth16")]
 /// The 17 proof words of `finalizeWithProof`:
 /// `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C, d]`.
 pub fn decider_proof_words(proof: &OnChainDeciderProof) -> Vec<Word> {
@@ -171,6 +181,7 @@ pub fn decider_proof_words(proof: &OnChainDeciderProof) -> Vec<Word> {
     words
 }
 
+#[cfg(feature = "dev-groth16")]
 /// `finalizeWithProof(bytes32 sessionId, bytes maskProof, uint256[17] proof, uint256[] key)`.
 pub fn finalize_with_proof(
     session: &Word,

@@ -96,6 +96,7 @@ fn abi_selectors_and_layout() {
     assert_eq!(data[4 + 127], 3);
 }
 
+#[cfg(feature = "dev-groth16")]
 #[test]
 fn onchain_decider_groth16_kzg() {
     use ark_std::rand::{rngs::StdRng, SeedableRng};
@@ -172,6 +173,7 @@ fn onchain_decider_groth16_kzg() {
     ));
 }
 
+#[cfg(feature = "dev-groth16")]
 #[test]
 fn decider_witness_cannot_be_swapped_after_the_point_is_known() {
     // Regression test for the commit-and-prove link. An accumulator whose

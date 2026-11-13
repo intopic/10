@@ -95,6 +95,10 @@ fn remap(shape: &R1CSShape<Fr>, n: usize, col: usize) -> usize {
 #[derive(Clone, Debug)]
 pub struct CircuitKey {
     pub dims: Dims,
+    /// Number of public inputs of the circuit. Part of the key (and so of the
+    /// circuit's identity): the verifier accepts only accumulators with
+    /// exactly this many, since any further one would be unconstrained.
+    pub num_io: usize,
     pub(crate) row_idx: Vec<usize>,
     pub(crate) col_idx: Vec<usize>,
     pub(crate) row: Vec<Fr>,
@@ -168,6 +172,7 @@ impl CircuitKey {
         ];
         Self {
             dims,
+            num_io: shape.num_io,
             row_idx,
             col_idx,
             row,
@@ -192,7 +197,8 @@ impl CircuitKey {
     }
 
     /// The full decider key as the contract receives it: [`Self::words`]
-    /// followed by the blinding generator `H` and `[τ]₂` (23 words).
+    /// followed by the blinding generator `H`, `[τ]₂` and the number of
+    /// public inputs (24 words).
     pub fn contract_words(&self, h: &ark_bn254::G1Affine, tau_g2: &G2Affine) -> Vec<Word> {
         use ark_ec::AffineRepr;
         let mut words = self.words();
@@ -200,6 +206,7 @@ impl CircuitKey {
         words.extend([word(&hx), word(&hy)]);
         let (x, y) = tau_g2.xy().expect("[τ]₂ is not the identity");
         words.extend([word(&x.c1), word(&x.c0), word(&y.c1), word(&y.c0)]);
+        words.push(word(&Fr::from(self.num_io as u64)));
         words
     }
 
@@ -216,13 +223,11 @@ impl CircuitKey {
         hasher.finalize().into()
     }
 
-    /// `keccak256` of [`Self::words`].
-    pub fn digest(&self) -> Word {
-        let mut h = Keccak256::new();
-        for w in self.words() {
-            h.update(w);
-        }
-        h.finalize().into()
+    /// What the transcript absorbs for the key: `keccak256` of the whole
+    /// [`Self::contract_words`] of `params` (matrices, `H`, `[τ]₂` and the
+    /// number of public inputs); `None` without KZG parameters.
+    pub(crate) fn transcript_digest(&self, params: &EvmParams) -> Option<Word> {
+        Some(self.circuit_id(&params.ck.h, &params.tau_g2?))
     }
 }
 
@@ -364,7 +369,10 @@ pub fn prove(
     let dims = key.dims;
     let (m, n, z_len) = (dims.m(), dims.n(), dims.z());
     let commit = |v: &[Fr]| params.ck.commit(v, Fr::zero());
-    let mut tr = start(params, &key.digest(), acc, &witness.r_w, &witness.r_e);
+    let digest = key
+        .transcript_digest(params)
+        .expect("params come from setup_universal");
+    let mut tr = start(params, &digest, acc, &witness.r_w, &witness.r_e);
 
     // ---- 1. Outer sum-check ----------------------------------------------
     let tau = tr.challenges(dims.log_m);
@@ -591,12 +599,17 @@ pub fn verify_deferred(
     acc: &RelaxedR1CSInstance<G1>,
     proof: &UniversalProof,
 ) -> Option<(G1, G1)> {
-    let _ = params.tau_g2?;
     let dims = key.dims;
-    if acc.x.len() != params.shape.num_io {
+    if acc.x.len() != key.num_io || key.num_io != params.shape.num_io {
         return None;
     }
-    let mut tr = start(params, &key.digest(), acc, &proof.r_w, &proof.r_e);
+    let mut tr = start(
+        params,
+        &key.transcript_digest(params)?,
+        acc,
+        &proof.r_w,
+        &proof.r_e,
+    );
 
     // 1. Outer sum-check.
     let tau = tr.challenges(dims.log_m);

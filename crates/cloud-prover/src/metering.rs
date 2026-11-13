@@ -1,9 +1,19 @@
 //! Usage metering for pay-per-proof billing.
 //!
 //! Every billable event is counted per customer and, when a log file is
-//! configured, appended as one JSON line carrying the SHA-256 of the previous
-//! line's hash. Deleting, reordering or editing past records breaks the
-//! chain, which [`verify_log`] detects.
+//! configured, appended (and synced to disk) as one JSON line carrying the
+//! SHA-256 of the previous line's hash. An event counts only once its record
+//! is on disk: [`Meter::record`] fails otherwise, and the service then
+//! delivers nothing for it.
+//!
+//! What the chain proves. Editing, reordering or removing records *inside*
+//! the log breaks the chain, which [`verify_log`] detects. The chain has no
+//! secret, so it does **not** by itself detect a log whose last records were
+//! cut off, or one rewritten from scratch by whoever controls the file:
+//! both are detected only against a head hash kept elsewhere. The current
+//! head is returned by [`Meter::head`] and by `GET /v1/usage` (`log_head`);
+//! whoever audits the billing should record it periodically outside the
+//! machine that holds the log.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -61,7 +71,15 @@ const GENESIS: &str = "000000000000000000000000000000000000000000000000000000000
 pub struct Meter {
     usage: HashMap<String, Usage>,
     last_hash: String,
-    log: Option<File>,
+    log: Sink,
+}
+
+enum Sink {
+    Memory,
+    File(File),
+    /// Writes fail after this many records (tests of the billing-failure
+    /// path).
+    FailingAfter(usize),
 }
 
 impl Meter {
@@ -70,8 +88,24 @@ impl Meter {
         Self {
             usage: HashMap::new(),
             last_hash: GENESIS.to_string(),
-            log: None,
+            log: Sink::Memory,
         }
+    }
+
+    /// A meter whose log cannot be written after `after` records, to test that nothing is
+    /// delivered unbilled.
+    #[doc(hidden)]
+    pub fn failing_for_tests(after: usize) -> Self {
+        Self {
+            log: Sink::FailingAfter(after),
+            ..Self::in_memory()
+        }
+    }
+
+    /// The hash of the last record (the genesis value for an empty log):
+    /// the value to anchor outside this machine.
+    pub fn head(&self) -> &str {
+        &self.last_hash
     }
 
     /// Opens (or creates) a usage log, verifying its hash chain and
@@ -86,30 +120,36 @@ impl Meter {
         Ok(Self {
             usage,
             last_hash,
-            log: Some(log),
+            log: Sink::File(log),
         })
     }
 
-    /// Counts one event for `customer` at Unix time `ts`.
-    pub fn record(&mut self, customer: &str, event: Event, ts: u64) {
-        apply(self.usage.entry(customer.to_string()).or_default(), event);
+    /// Counts one event for `customer` at Unix time `ts`. With a log file,
+    /// the event counts only if its record reached the disk; on an error
+    /// nothing changes and the caller must not deliver what it was billing.
+    pub fn record(&mut self, customer: &str, event: Event, ts: u64) -> io::Result<()> {
         let hash = record_hash(&self.last_hash, ts, customer, event);
-        if let Some(log) = &mut self.log {
-            let record = Record {
-                ts,
-                customer: customer.to_string(),
-                event,
-                prev: self.last_hash.clone(),
-                hash: hash.clone(),
-            };
-            let line = serde_json::to_string(&record).expect("record serializes");
-            // A billing record that cannot be persisted must not be lost
-            // silently: surface it on stderr for the operator.
-            if let Err(e) = writeln!(log, "{line}").and_then(|_| log.flush()) {
-                eprintln!("usage log write failed: {e}");
+        match &mut self.log {
+            Sink::Memory => {}
+            Sink::FailingAfter(0) => return Err(io::Error::other("usage log is not writable")),
+            Sink::FailingAfter(left) => *left -= 1,
+            Sink::File(log) => {
+                let record = Record {
+                    ts,
+                    customer: customer.to_string(),
+                    event,
+                    prev: self.last_hash.clone(),
+                    hash: hash.clone(),
+                };
+                let line = serde_json::to_string(&record).expect("record serializes");
+                writeln!(log, "{line}")?;
+                log.flush()?;
+                log.sync_data()?;
             }
         }
+        apply(self.usage.entry(customer.to_string()).or_default(), event);
         self.last_hash = hash;
+        Ok(())
     }
 
     pub fn usage(&self, customer: &str) -> Usage {

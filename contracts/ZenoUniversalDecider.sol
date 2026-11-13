@@ -58,8 +58,9 @@ contract ZenoUniversalDecider {
     /// @notice Verifies a universal decider proof; reverts if it is invalid.
     /// @param vk identifier of the circuit and commitment key (as in sessions).
     /// @param key `[log_m, log_n, log_k, row, col, val_A, val_B, val_C,
-    /// count_row, count_col, H, [τ]₂]`: dimensions, the seven matrix
-    /// commitments, the blinding generator and `[τ]₂` (23 words).
+    /// count_row, count_col, H, [τ]₂, num_io]`: dimensions, the seven matrix
+    /// commitments, the blinding generator, `[τ]₂` and the circuit's number
+    /// of public inputs (24 words).
     /// @param acc the accumulator `[comm_E, u, comm_W, x…]`.
     /// @param proof the proof words, in protocol order.
     function verify(
@@ -103,7 +104,9 @@ contract ZenoUniversalDecider {
         uint256[] calldata acc,
         uint256[] calldata proof
     ) private view returns (uint256, uint256, uint256, uint256) {
-        if (key.length != 23 || acc.length < 6) revert MalformedInput();
+        // The accumulator carries exactly the circuit's public inputs: a
+        // longer one would hold values no constraint touches.
+        if (key.length != 24 || acc.length < 6 || acc.length != 5 + key[23]) revert MalformedInput();
         uint256 logM = key[0];
         uint256 logN = key[1];
         uint256 logK = key[2];
@@ -119,7 +122,8 @@ contract ZenoUniversalDecider {
         {
             uint256[] memory head = new uint256[](2);
             head[0] = uint256(vk);
-            head[1] = uint256(keccak256(abi.encodePacked(key[0:17])));
+            // The whole key: matrices, H, [τ]₂ and the number of inputs.
+            head[1] = uint256(keccak256(abi.encodePacked(key)));
             uint256[] memory blinds = new uint256[](2);
             blinds[0] = rW;
             blinds[1] = rE;

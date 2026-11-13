@@ -19,8 +19,8 @@ ark-bn254.workspace = true
 ark-relations.workspace = true
 ark-crypto-primitives = { workspace = true, features = ["r1cs"] }
 ark-r1cs-std.workspace = true
-ark-groth16 = { version = "0.5", default-features = false }
-ark-snark = { version = "0.5", default-features = false }
+ark-groth16 = { version = "0.5", default-features = false, optional = true }
+ark-snark = { version = "0.5", default-features = false, optional = true }
 sha2.workspace = true
 sha3.workspace = true
 
@@ -28,6 +28,9 @@ sha3.workspace = true
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
 
 [features]
+# DEVELOPMENT ONLY: the Groth16 decider (mode C). Its keys are circuit-specific
+# and come from a setup with a trapdoor; off by default.
+dev-groth16 = ["dep:ark-groth16", "dep:ark-snark"]
 default = ["parallel", "cli", "batch-affine-msm"]
 # The prover's commitments with batched affine additions (llull-folder::msm).
 batch-affine-msm = ["llull-folder/batch-affine-msm"]
@@ -36,7 +39,7 @@ parallel = [
     "decider-zk/parallel",
     "zeno-ivc/parallel",
     "core-r1cs/parallel",
-    "ark-groth16/parallel",
+    "ark-groth16?/parallel",
 ]
 cli = ["llull-folder/cli", "zeno-ivc/cli", "ark-std/std"]
 

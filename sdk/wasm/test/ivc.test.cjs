@@ -13,13 +13,18 @@ const P = 2188824287183927522224640574525727508854836440041603434369820418657580
 const STEPS = Number(process.env.STEPS ?? 25);
 const MAX_WASM_MIB = Number(process.env.MAX_WASM_MIB ?? 512);
 const wasmMiB = () => sdk.wasmMemoryBytes() / (1024 * 1024);
+// The prover runs only under a license. A package built without a vendor
+// key (as in CI) checks against the public development key:
+//   zeno-license issue --dev --customer ci --plan enterprise --days 1
+const LICENSE = process.env.ZENO_TEST_LICENSE;
+assert.ok(LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
 
 (async () => {
   const r1cs = fs.readFileSync(path.join(fixtures, "step.r1cs"));
   const calc = await witnessCalculator(fs.readFileSync(path.join(fixtures, "step.wasm")));
 
   let t = performance.now();
-  const prover = new sdk.ZenoLlullProver(r1cs, ["3"]);
+  const prover = new sdk.ZenoLlullProver(LICENSE, r1cs, ["3"]);
   console.log(`setup            : ${(performance.now() - t).toFixed(0)} ms`);
 
   let z = 3n;
@@ -64,19 +69,38 @@ const wasmMiB = () => sdk.wasmMemoryBytes() / (1024 * 1024);
     bad[offset] ^= 1;
     assert.throws(() => verifier.verify(bad));
   }
-  assert.throws(() => new sdk.ZenoLlullProver(r1cs.subarray(0, 100), ["3"]), /malformed/);
-  assert.throws(() => new sdk.ZenoLlullProver(r1cs, ["not-a-number"]), /invalid field element/);
+  assert.throws(() => new sdk.ZenoLlullProver(LICENSE, r1cs.subarray(0, 100), ["3"]), /malformed/);
+  assert.throws(() => new sdk.ZenoLlullProver(LICENSE, r1cs, ["not-a-number"]), /invalid field element/);
 
   assert.equal(verifier.verifications, 4);
 
-  // License keys: a syntactically valid key signed by nobody is refused.
-  assert.throws(() => sdk.verifyLicense("zl1.YQ.Yg", "00".repeat(32), Date.now() / 1000));
-  assert.throws(() => sdk.verifyLicense("nonsense", "00".repeat(32), 0), /malformed/);
-  if (process.env.ZENO_TEST_LICENSE) {
-    const lic = sdk.verifyLicense(process.env.ZENO_TEST_LICENSE, process.env.ZENO_LICENSE_PUBLIC_KEY, Date.now() / 1000);
-    assert.equal(lic.customer, "ci");
-    console.log(`license          : ${lic.customer} / ${lic.plan}`);
-    assert.throws(() => sdk.verifyLicense(process.env.ZENO_TEST_LICENSE, process.env.ZENO_LICENSE_PUBLIC_KEY, 4e9), /expired/);
+  // License keys are checked against the vendor key compiled into the
+  // package; the caller cannot supply a key or a clock of its own.
+  assert.throws(() => sdk.verifyLicense("zl1.YQ.Yg"));
+  assert.throws(() => sdk.verifyLicense("nonsense"), /malformed/);
+  const lic = sdk.verifyLicense(LICENSE);
+  assert.equal(lic.customer, "ci");
+  console.log(`license          : ${lic.customer} / ${lic.plan}${lic.developmentBuild ? " (development build)" : ""}`);
+  // No prover without a license, with a forged one, or with one signed by
+  // somebody else (ZENO_FOREIGN_LICENSE: any key but the build's).
+  assert.throws(() => new sdk.ZenoLlullProver("", r1cs, ["3"]), /license/);
+  assert.throws(() => new sdk.ZenoLlullProver(LICENSE.slice(0, -4) + "AAAA", r1cs, ["3"]), /license/);
+  if (process.env.ZENO_FOREIGN_LICENSE) {
+    assert.throws(() => new sdk.ZenoLlullProver(process.env.ZENO_FOREIGN_LICENSE, r1cs, ["3"]), /signature/);
+  }
+  // A quota of two steps: the third step is refused.
+  if (process.env.ZENO_QUOTA_LICENSE) {
+    assert.equal(sdk.verifyLicense(process.env.ZENO_QUOTA_LICENSE).maxSteps, 2);
+    const limited = new sdk.ZenoLlullProver(process.env.ZENO_QUOTA_LICENSE, r1cs, ["3"]);
+    let s = 3n;
+    for (let i = 0; i < 3; i++) {
+      const w = await calc.calculateWTNSBin({ step_in: [s.toString()], secret: "7" }, 0);
+      if (i < 2) limited.proveStep(w);
+      else assert.throws(() => limited.proveStep(w), /quota/);
+      s = (s * s * s + s + 7n) % P;
+    }
+    assert.equal(limited.steps, 2);
+    console.log("license quota    : third step refused under a 2-step license");
   }
 
   const peak = wasmMiB();

@@ -32,7 +32,39 @@ pub enum SdkError {
     },
     MalformedProof,
     InvalidFieldElement,
+    /// The circuit exceeds the configured [`CircuitLimits`].
+    TooLarge {
+        what: &'static str,
+        limit: usize,
+        got: usize,
+    },
+    /// The license key is missing, invalid or expired.
+    License(String),
+    /// The license's step quota is used up.
+    QuotaExceeded {
+        max_steps: u64,
+    },
     Ivc(IvcError),
+}
+
+/// Upper bounds on a step circuit. A `.r1cs` header is a few bytes that
+/// declare how much memory the prover will allocate, so the declared sizes
+/// are checked before anything is allocated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CircuitLimits {
+    pub max_wires: usize,
+    pub max_constraints: usize,
+}
+
+impl Default for CircuitLimits {
+    /// 2^24 wires and constraints: far above what the prover handles in
+    /// practice, far below what exhausts an address space.
+    fn default() -> Self {
+        Self {
+            max_wires: 1 << 24,
+            max_constraints: 1 << 24,
+        }
+    }
 }
 
 impl From<IvcError> for SdkError {
@@ -63,6 +95,13 @@ impl fmt::Display for SdkError {
             }
             Self::MalformedProof => write!(f, "malformed proof bytes"),
             Self::InvalidFieldElement => write!(f, "invalid field element"),
+            Self::TooLarge { what, limit, got } => {
+                write!(f, "circuit too large: {got} {what}, the limit is {limit}")
+            }
+            Self::License(reason) => write!(f, "license: {reason}"),
+            Self::QuotaExceeded { max_steps } => {
+                write!(f, "license quota of {max_steps} steps is used up")
+            }
             Self::Ivc(e) => write!(f, "{e}"),
         }
     }
@@ -163,8 +202,14 @@ pub struct CircomR1cs<F: PrimeField> {
 }
 
 impl<F: PrimeField> CircomR1cs<F> {
-    /// Parses and validates a `.r1cs` file for the field `F`.
+    /// Parses and validates a `.r1cs` file for the field `F`, within the
+    /// default [`CircuitLimits`].
     pub fn parse(bytes: &[u8]) -> Result<Self, SdkError> {
+        Self::parse_with_limits(bytes, CircuitLimits::default())
+    }
+
+    /// Parses and validates a `.r1cs` file for the field `F`.
+    pub fn parse_with_limits(bytes: &[u8], limits: CircuitLimits) -> Result<Self, SdkError> {
         let all = sections(bytes, b"r1cs")?;
 
         let mut header = Reader {
@@ -184,7 +229,25 @@ impl<F: PrimeField> CircomR1cs<F> {
                 public_inputs: num_public_inputs,
             });
         }
-        if num_wires < 1 + num_outputs + num_public_inputs + num_private_inputs {
+        // Declared sizes are bounded before they drive any allocation.
+        if num_wires > limits.max_wires {
+            return Err(SdkError::TooLarge {
+                what: "wires",
+                limit: limits.max_wires,
+                got: num_wires,
+            });
+        }
+        if num_constraints > limits.max_constraints {
+            return Err(SdkError::TooLarge {
+                what: "constraints",
+                limit: limits.max_constraints,
+                got: num_constraints,
+            });
+        }
+        let declared = [num_outputs, num_public_inputs, num_private_inputs]
+            .iter()
+            .try_fold(1usize, |acc, n| acc.checked_add(*n));
+        if declared.is_none_or(|d| num_wires < d) {
             return Err(SdkError::Malformed("inconsistent wire counts"));
         }
 

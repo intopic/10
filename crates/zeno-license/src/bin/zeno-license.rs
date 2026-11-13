@@ -10,7 +10,9 @@ zeno-license — issue and check Zeno–Llull license keys
 
 USAGE:
     zeno-license keygen
-    zeno-license issue  --customer NAME --plan PLAN --days N     (private key in ZENO_LICENSE_PRIVATE_KEY)
+    zeno-license issue  --customer NAME --plan PLAN --days N [--max-steps N] [--dev]
+                        (private key in ZENO_LICENSE_PRIVATE_KEY; --dev signs with the
+                         public development key, for builds without a vendor key)
     zeno-license verify --key TOKEN --public-key HEX
 
 Keep the private key secret; ship only the public key.
@@ -40,9 +42,17 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("issue") => {
-            let private = std::env::var("ZENO_LICENSE_PRIVATE_KEY")
-                .map_err(|_| "ZENO_LICENSE_PRIVATE_KEY is not set".to_string())?;
-            let private = parse_key_hex(&private).map_err(|e| e.to_string())?;
+            let private = if args.iter().any(|a| a == "--dev") {
+                zeno_license::DEV_PRIVATE_KEY
+            } else {
+                let private = std::env::var("ZENO_LICENSE_PRIVATE_KEY")
+                    .map_err(|_| "ZENO_LICENSE_PRIVATE_KEY is not set".to_string())?;
+                parse_key_hex(&private).map_err(|e| e.to_string())?
+            };
+            let max_steps = match flag(args, "--max-steps") {
+                Ok(v) => Some(v.parse::<u64>().map_err(|_| "--max-steps: not a number")?),
+                Err(_) => None,
+            };
             let days: u64 = flag(args, "--days")?
                 .parse()
                 .map_err(|_| "--days: not a number")?;
@@ -50,6 +60,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 customer: flag(args, "--customer")?,
                 plan: flag(args, "--plan")?,
                 expires_at: now() + days * 86_400,
+                max_steps,
             };
             println!("{}", issue(&private, &claims).map_err(|e| e.to_string())?);
             eprintln!("public key: {}", key_to_hex(&public_key(&private)));
@@ -60,8 +71,13 @@ fn run(args: &[String]) -> Result<(), String> {
             let claims =
                 verify(&flag(args, "--key")?, &public, now()).map_err(|e| e.to_string())?;
             println!(
-                "valid: customer={} plan={} expires_at={}",
-                claims.customer, claims.plan, claims.expires_at
+                "valid: customer={} plan={} expires_at={} max_steps={}",
+                claims.customer,
+                claims.plan,
+                claims.expires_at,
+                claims
+                    .max_steps
+                    .map_or("unlimited".to_string(), |m| m.to_string())
             );
             Ok(())
         }

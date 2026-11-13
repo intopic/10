@@ -54,7 +54,8 @@ fn universal_decider_accepts_folded_accumulators() {
         // Preprocessing is deterministic: anyone recomputes the same key,
         // and with it the circuit's on-chain identity.
         let again = CircuitKey::preprocess(&params.shape, &params.ck);
-        assert_eq!(again.digest(), key.digest());
+        assert_eq!(again.comms, key.comms);
+        assert_eq!(again.num_io, params.shape.num_io);
         let tau_g2 = params.tau_g2.unwrap();
         assert_eq!(again.circuit_id(&params.ck.h, &tau_g2), params.vk);
         for steps in [1, 3] {
@@ -235,4 +236,74 @@ fn finalize_universal_end_to_end_and_proof_size() {
         Err(DeciderError::NotKzg)
     ));
     let _ = kzg_params;
+}
+
+/// `out = in² + in` with public inputs `(in, out)` and `extra` further public
+/// inputs that no constraint touches.
+fn square_step(
+    extra: usize,
+    z_in: Fr,
+    junk: Fr,
+) -> (llull_folder::core_r1cs::R1CSShape<Fr>, Vec<Fr>, Vec<Fr>) {
+    use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget, fields::fp::FpVar, fields::FieldVar};
+    use ark_relations::r1cs::{ConstraintSystem, SynthesisMode};
+    use llull_folder::core_r1cs::ark_bridge::{assignment_from_cs, shape_from_cs};
+    let cs = ConstraintSystem::<Fr>::new_ref();
+    cs.set_mode(SynthesisMode::Prove {
+        construct_matrices: true,
+    });
+    let z_out = z_in * z_in + z_in;
+    let a = FpVar::new_input(cs.clone(), || Ok(z_in)).unwrap();
+    let b = FpVar::new_input(cs.clone(), || Ok(z_out)).unwrap();
+    for _ in 0..extra {
+        let _ = FpVar::new_input(cs.clone(), || Ok(junk)).unwrap();
+    }
+    // A few witnesses so that the padded dimensions do not depend on `extra`.
+    let mut sq = a.square().unwrap();
+    for _ in 0..6 {
+        let w = FpVar::new_witness(cs.clone(), || Ok(z_in * z_in)).unwrap();
+        w.enforce_equal(&sq).unwrap();
+        sq = w;
+    }
+    (sq + &a).enforce_equal(&b).unwrap();
+    let shape = shape_from_cs(&cs).unwrap();
+    let (w, x) = assignment_from_cs(&cs).unwrap();
+    (shape, w, x)
+}
+
+#[test]
+fn the_number_of_public_inputs_is_part_of_the_circuit_identity() {
+    // Regression test. Public inputs beyond the circuit's own occupy columns
+    // of Z that no matrix entry touches, so they are unconstrained. The two
+    // circuits below have the same matrices — the same seven commitments and
+    // dimensions — and differ only in two such inputs. Before the number of
+    // inputs was part of the key, they had the same on-chain identity, and
+    // an accumulator with arbitrary extra "state" was decided under the
+    // identity of the two-input circuit.
+    let mut rng = StdRng::seed_from_u64(9);
+    let (shape, _, _) = square_step(0, Fr::from(3u64), Fr::one());
+    let (wide_shape, w, x) = square_step(2, Fr::from(3u64), Fr::from(123_456u64));
+    assert_eq!((shape.num_io, wide_shape.num_io), (2, 4));
+    let srs = Srs::insecure_for_testing(universal::Dims::of(&wide_shape).srs_len(), &mut rng);
+    let (params, key) = EvmParams::setup_universal(shape, b"arity", &srs);
+    let (wide_params, wide_key) = EvmParams::setup_universal(wide_shape, b"arity", &srs);
+    assert_eq!(key.dims, wide_key.dims);
+    assert_eq!(key.comms, wide_key.comms, "the matrices are the same");
+    assert_ne!(params.vk, wide_params.vk, "but the identities differ");
+
+    // An honest proof for the wide circuit, whose extra inputs are junk.
+    let mut folder = OnChainFolder::new(&wide_params);
+    folder.fold_step(&wide_params, w, x, &mut rng).unwrap();
+    let (acc, witness) = (folder.acc, folder.witness);
+    assert_eq!(acc.x.len(), 4);
+    let proof = universal::prove(&wide_params, &wide_key, &acc, &witness);
+    assert!(universal::verify(&wide_params, &wide_key, &acc, &proof));
+    // It is not a proof for the two-input circuit, with either key object.
+    assert!(!universal::verify(&params, &key, &acc, &proof));
+    assert!(!universal::verify(&params, &wide_key, &acc, &proof));
+    assert!(!universal::verify(&wide_params, &key, &acc, &proof));
+    // The key's 24th word is the number of inputs.
+    let words = wide_key.contract_words(&wide_params.ck.h, &wide_params.tau_g2.unwrap());
+    assert_eq!(words.len(), 24);
+    assert_eq!(words[23][31], 4);
 }

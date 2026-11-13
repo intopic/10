@@ -121,6 +121,20 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     }
   }
   console.log(`forgeries            : ${forged} single-word changes, all rejected`);
+
+  // ---- Canonical encodings: z_i + r is the same field element as z_i, but
+  // it is not a second encoding of the claim --------------------------------
+  {
+    const R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    const at = 2 + 2 * (fx.starts[2] + 32 * 3); // state = [i, k, z_0, z_i, …]
+    const zi = BigInt("0x" + fx.calldata.slice(at, at + 64));
+    const bad = fx.calldata.slice(0, at) + (zi + R).toString(16).padStart(64, "0") + fx.calldata.slice(at + 64);
+    const r = await call(bad);
+    assert.equal(r.ok, false, "a non-canonical z_i was accepted");
+    const { keccak256 } = require("ethereum-cryptography/keccak.js");
+    assert.equal(r.ret.slice(0, 10), bytesToHex(keccak256(Buffer.from("MalformedInput()"))).slice(0, 10));
+    console.log("non-canonical claim  : rejected as malformed");
+  }
   console.log("OK");
 })().catch((e) => {
   console.error(e);

@@ -3,14 +3,17 @@
 //! * [`circom`]: parsers for Circom's `.r1cs` and `.wtns` binary formats.
 //! * [`CircomIvc`]: IVC over a Circom step circuit on the BN254/Grumpkin
 //!   cycle (Circom's default prime is the BN254 scalar field).
+//! * [`api`]: what every binding shares — the licensed prover, the statement
+//!   of a proof, state conversions.
 //! * [`lib_wasm_ffi`]: the WebAssembly / TypeScript API built on top of it.
 #![forbid(unsafe_code)]
 
+pub mod api;
 pub mod circom;
 pub mod lib_wasm_ffi;
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use circom::{parse_wtns, CircomR1cs, SdkError};
+use circom::{parse_wtns, CircomR1cs, CircuitLimits, SdkError};
 use decider_zk::CompressedIvcProof;
 use rand::RngCore;
 use zeno_ivc::{IvcParams, R1csStep, ZenoAccumulator};
@@ -35,7 +38,12 @@ pub struct CircomParams {
 impl CircomParams {
     /// Parses a `.r1cs` file and derives the transparent IVC parameters.
     pub fn setup(r1cs_bytes: &[u8]) -> Result<Self, SdkError> {
-        let r1cs = CircomR1cs::<Fr>::parse(r1cs_bytes)?;
+        Self::setup_with_limits(r1cs_bytes, CircuitLimits::default())
+    }
+
+    /// [`Self::setup`] for circuits within `limits`.
+    pub fn setup_with_limits(r1cs_bytes: &[u8], limits: CircuitLimits) -> Result<Self, SdkError> {
+        let r1cs = CircomR1cs::<Fr>::parse_with_limits(r1cs_bytes, limits)?;
         let ivc = IvcParams::setup(&r1cs.step(None), LABEL)?;
         Ok(Self { r1cs, ivc })
     }
@@ -58,7 +66,17 @@ pub struct CircomIvc {
 impl CircomIvc {
     /// Starts a computation at state `z0`.
     pub fn new(r1cs_bytes: &[u8], z0: Vec<Fr>) -> Result<Self, SdkError> {
-        let params = CircomParams::setup(r1cs_bytes)?;
+        Self::new_with_limits(r1cs_bytes, z0, CircuitLimits::default())
+    }
+
+    /// [`Self::new`] for circuits within `limits` (services that accept
+    /// circuits from clients set their own).
+    pub fn new_with_limits(
+        r1cs_bytes: &[u8],
+        z0: Vec<Fr>,
+        limits: CircuitLimits,
+    ) -> Result<Self, SdkError> {
+        let params = CircomParams::setup_with_limits(r1cs_bytes, limits)?;
         let acc = ZenoAccumulator::new(&params.ivc, z0)?;
         Ok(Self { params, acc })
     }

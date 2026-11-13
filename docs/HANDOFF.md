@@ -37,7 +37,7 @@ kontrata verifikuese në EVM.
 | `crates/zeno-ivc/src/cyclefold` | IVC me **CycleFold**: qarku CycleFold, angazhime Hyrax për çdo rresht, qarku primar dhe stepper-i `CycleFoldAccumulator`, qarku mbyllës |
 | `crates/zeno-ivc/src/gadgets` | Gadget-e me peshë të ulët: pika afine, shumëzim skalar ELM, MSM me bazë fikse, Poseidon me gjendje të rrafshuar |
 | `crates/decider-zk` | Maskimi zero-knowledge, sum-check, IPA, prova e shkurtër transparente `CompressedIvcProof`, CLI `zeno-decider` |
-| `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, qarku vendimtar Groth16, **vendimtari universal** (`src/universal/`), **vendimtari rekursiv** (`src/recursive.rs`) |
+| `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, **vendimtari universal** (`src/universal/`), **vendimtari rekursiv** (`src/recursive.rs`) |
 | `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë), `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal, edhe `verifyDeferred`), `ZenoBatchedDecider.sol` (një provë universale për disa qarqe) dhe `ZenoRecursiveVerifier.sol` (`finalizeRecursive`, me matricat CycleFold në `ZenoCycleFoldShape.sol`, të gjeneruar), me teste në EVM lokale |
 | `crates/sdk-bindings`, `sdk/wasm` | Hyrje nga Circom (`.r1cs` / `.wtns`), API WebAssembly, paketa `@zenollull/wasm-sdk` (me variant me shumë fije) |
 | `crates/mobile-ffi`, `sdk/native`, `sdk/android` | SDK native me UniFFI: lidhje Swift, Kotlin, Python; paketim AAR dhe XCFramework |
@@ -66,7 +66,13 @@ janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxh
 është lineare në numrin e hapave.
 
 **C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
-çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme.
+çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme. Nuk
+është pjesë e prodhimit: në Rust është pas feature-it `dev-groth16` (joaktiv
+si parazgjedhje), në zinxhir vetëm te kontrata
+`contracts/dev/ZenoLlullVerifierDevGroth16.sol`. `ZenoLlullVerifier.sol` nuk
+ka as `finalizeWithProof`, as regjistër çelësash.
+
+Emërtimi A / B / C / D është i njëjtë kudo: në kod, në teste dhe në dokumente.
 
 **D. IVC rekursive me CycleFold + `finalizeRecursive`.** `zeno-ivc::cyclefold` +
 `evm-verifier::recursive` + `ZenoRecursiveVerifier.sol`. Provuesi palos N hapa
@@ -129,6 +135,38 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   `vk = keccak256(çelësi i qarkut)`; vetëm ai çelës mund ta vendosë. Pala që
   mbështetet te një sesion duhet ta rillogarisë vetë këtë identitet nga qarku
   dhe `.ptau` dhe ta krahasojë.
+- **Numri i hyrjeve publike është pjesë e çelësit** (fjala e 24-t, `num_io`).
+  Hyrjet publike përtej atyre të qarkut bien në kolona të `Z` që asnjë
+  kufizim nuk i prek. Para këtij ndryshimi një sesion i hapur me aritet më të
+  madh se i qarkut dilte `decided` me gjendje arbitrare. Tani të dy
+  vendimtarët kërkojnë `acc.length == 5 + num_io` dhe e thithin gjithë çelësin
+  (matricat, `H`, `[τ]₂`, `num_io`) në transkript. Testi i regresit:
+  `the_number_of_public_inputs_is_part_of_the_circuit_identity`.
+- **Vendimtari universal është `immutable`** te `ZenoLlullVerifier`: jepet në
+  konstruktor dhe askush nuk e ndërron dot. Pronari kontrollon vetëm tarifën.
+- **Kodime kanonike në `finalizeRecursive`.** Çdo skalar i `state` dhe i
+  `cfProof` duhet të jetë nën modulin e vet, që një pretendim të ketë një
+  kodim të vetëm në `decided`.
+- **`zeno-evm-fixture` është mjet testimi, jo provues.** Përdor farë fikse,
+  pra provat e tij nuk janë zero-knowledge. Provuesit e prodhimit thërrasin
+  bibliotekën me gjenerator të rastësisë të sistemit.
+- **Licenca në SDK.** Provuesi i SDK-së (`sdk_bindings::api::LicensedProver`)
+  punon vetëm me licencë të vlefshme, të kontrolluar kundrejt çelësit publik
+  të shitësit të ngulitur në ndërtim (`ZENO_VENDOR_PUBLIC_KEY` në kohën e
+  kompilimit) dhe kundrejt orës së sistemit; kuota `max_steps` zbatohet në
+  çdo hap. Një ndërtim pa atë variabël përdor çelësin e zhvillimit, pjesa
+  private e të cilit është publike (`zeno-license issue --dev`), dhe e thotë
+  këtë (`development_build`). **Ndërtimet e lëshimit duhet ta vendosin
+  variablin.** Një kontroll në pajisjen e klientit mund të hiqet duke
+  ndryshuar kodin: mbrojtja reale mbetet ligjore dhe te Cloud Prover.
+- **Cloud Prover.** Licenca kontrollohet para se të lexohet trupi; madhësitë e
+  deklaruara të qarkut kufizohen para çdo alokimi (`ZENO_MAX_WIRES`,
+  `ZENO_MAX_CONSTRAINTS`); punët paralele kufizohen (`ZENO_MAX_JOBS`, 503
+  kur është plot); faturimi bëhet brenda punës, pra edhe kur klienti
+  shkëputet; nëse regjistri nuk shkruhet dot, nuk jepet asgjë. Regjistri
+  dallon ndryshimet në mes, por jo prerjen e fundit apo rishkrimin e plotë:
+  për këto duhet ruajtur diku tjetër `log_head` (nga `GET /v1/usage`).
+  Shërbimi duhet vënë pas TLS-së, se licenca udhëton si bearer.
 - **Transkriptet duhet të përputhen bajt për bajt** mes Rust-it
   (`evm-verifier`) dhe Solidity-t. Testi `contracts/test/verifier.test.cjs`
   ekzekuton kontratat në një EVM lokale kundrejt provave të Rust-it dhe është
@@ -182,13 +220,13 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
    optimizimet e vendosura (3.57 M gas, `.ptau 2^20`). Mbetet vendimi nëse ia
    vlen investimi në uljen e mëtejshme të gazit të vendimtarit universal
    (pika 8.2).
-2. **Mënyra Groth16 (`finalizeWithProof`)**: të hiqet nga kontrata, apo të
-   mbetet si mënyrë zhvillimi? Sot është e shënuar "vetëm për zhvillim" dhe
-   regjistrimi i çelësave të saj bëhet nga pronari i kontratës.
+2. **Mënyra Groth16 (C)**: e vendosur. Është jashtë prodhimit, pas
+   `dev-groth16` dhe në kontratë më vete për zhvillim.
 3. **Auditimi**: kur dhe nga kush, para çdo vendosjeje me vlerë reale.
 4. **Publikimi dhe çelësat**: tokeni i organizatës `@zenollull` në NPM dhe
    çelësi privat i licencave të shitësit nuk ekzistojnë ende; mjeti
-   `zeno-license keygen` e gjeneron të dytin.
+   `zeno-license keygen` e gjeneron të dytin. Çelësi publik përkatës duhet
+   dhënë si `ZENO_VENDOR_PUBLIC_KEY` kur ndërtohen paketat e lëshimit.
 5. **Zinxhiri i synuar**: mënyra D kushton 3.57 M gas, i njëjtë për çdo N.
    Mënyra B kushton 0.8–1.9 M për vendimin final plus rreth 23k gas për çdo
    hap, prandaj mënyra D del më e lirë kur N kalon rreth 75–120 hapa. Të dyja
@@ -236,7 +274,17 @@ cargo build --release -p evm-verifier && node contracts/test/recursive.test.cjs
 SDK-të:
 
 ```bash
+export ZENO_TEST_LICENSE="$(cargo run -q --release -p zeno-license -- issue --dev --customer ci --plan enterprise --days 1)"
+```
+
+```bash
 ./scripts/build-wasm-sdk.sh && node sdk/wasm/test/ivc.test.cjs
+```
+
+Mënyra C (Groth16, vetëm zhvillim):
+
+```bash
+cargo build --release -p evm-verifier --features dev-groth16 && ZENO_DEV_GROTH16=1 node contracts/test/verifier.test.cjs
 ```
 
 ```bash

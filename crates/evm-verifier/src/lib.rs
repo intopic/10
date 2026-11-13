@@ -20,20 +20,26 @@ extern crate alloc;
 
 pub mod abi;
 pub mod cf_uniform;
+#[cfg(feature = "dev-groth16")]
 pub mod decider_circuit;
 pub mod kzg;
 pub mod recursive;
 pub mod universal;
 
 use alloc::vec::Vec;
-use ark_bn254::{Bn254, Fq, Fr, G1Projective as G1, G2Affine};
+#[cfg(feature = "dev-groth16")]
+use ark_bn254::Bn254;
+use ark_bn254::{Fq, Fr, G1Projective as G1, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
+#[cfg(feature = "dev-groth16")]
 use ark_groth16::{Groth16, Proof, ProvingKey, VerifyingKey};
 use ark_serialize::CanonicalSerialize;
+#[cfg(feature = "dev-groth16")]
 use ark_snark::SNARK;
 use ark_std::rand::RngCore;
 use core_r1cs::{R1CSInstance, R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness};
+#[cfg(feature = "dev-groth16")]
 use decider_circuit::{witness_digest, DeciderCircuit};
 use decider_zk::spartan::{self, SpartanProof};
 use llull_folder::{
@@ -47,8 +53,10 @@ use sha3::Keccak256;
 pub const TAG_FOLD: u64 = 1;
 /// Transcript tag of the final masking fold; must match the contract.
 pub const TAG_MASK: u64 = 3;
+#[cfg(feature = "dev-groth16")]
 /// Transcript tag of the decider's evaluation point; must match the contract.
 pub const TAG_POINT: u64 = 5;
+#[cfg(feature = "dev-groth16")]
 /// Transcript tag of the KZG batching challenge; must match the contract.
 pub const TAG_BATCH: u64 = 6;
 
@@ -91,11 +99,13 @@ fn challenge(words: &[Word]) -> Fr {
     Fr::from_be_bytes_mod_order(&keccak(words)[16..])
 }
 
+#[cfg(feature = "dev-groth16")]
 /// `keccak256(words) mod r`, as the contract computes it.
 fn challenge_full(words: &[Word]) -> Fr {
     Fr::from_be_bytes_mod_order(&keccak(words))
 }
 
+#[cfg(feature = "dev-groth16")]
 /// The point at which the decider opens `comm_W` and `comm_E`. It depends on
 /// the whole final accumulator and on the digest `d` of the vectors inside
 /// the decider circuit, so those vectors are fixed before the point is.
@@ -106,6 +116,7 @@ pub fn decider_point(vk: &Word, acc: &RelaxedR1CSInstance<G1>, digest: &Fr) -> F
     challenge_full(&words)
 }
 
+#[cfg(feature = "dev-groth16")]
 /// The challenge batching the two KZG openings into one pairing check.
 pub fn batch_challenge(c: &Fr, w_eval: &Fr, e_eval: &Fr, pi_w: &G1, pi_e: &G1) -> Fr {
     let mut words = alloc::vec![
@@ -342,7 +353,7 @@ impl OnChainFolder {
         Ok((MaskProof { mask, comm_t }, acc, witness))
     }
 
-    /// Mode A (transparent): masks the accumulator and proves, succinctly,
+    /// Mode A (transparent, off-chain decider): masks the accumulator and proves, succinctly,
     /// that the final accumulator is satisfiable. After the contract
     /// executes `finalize` with the returned [`MaskProof`], its accumulator
     /// equals the returned instance and the SNARK verifies against it
@@ -357,7 +368,7 @@ impl OnChainFolder {
         Ok((mask, acc, snark))
     }
 
-    /// Universal mode: masks the accumulator and proves that it is
+    /// Mode B (universal on-chain decider): masks the accumulator and proves that it is
     /// satisfiable with the universal decider — no per-circuit keys, only
     /// the reference string and the public [`universal::CircuitKey`].
     /// `params` must come from [`EvmParams::setup_universal`].
@@ -388,9 +399,12 @@ impl OnChainFolder {
         Ok((mask, acc, proof))
     }
 
-    /// Mode B (EVM): masks the accumulator and produces the constant-size
-    /// decider proof that `finalizeWithProof` verifies on-chain: two KZG
-    /// openings and one Groth16 proof.
+    #[cfg(feature = "dev-groth16")]
+    /// Mode C (Groth16, **development only**, feature `dev-groth16`): masks
+    /// the accumulator and produces the constant-size decider proof that
+    /// `finalizeWithProof` of `ZenoLlullVerifierDevGroth16` verifies: two
+    /// KZG openings and one Groth16 proof. Its keys are circuit-specific and
+    /// come from a setup with a trapdoor.
     pub fn finalize_onchain(
         self,
         params: &EvmParams,
@@ -480,12 +494,14 @@ impl core::fmt::Display for DeciderError {
     }
 }
 
+#[cfg(feature = "dev-groth16")]
 /// Groth16 keys of the decider circuit of one application circuit.
 pub struct DeciderKeys {
     pub pk: ProvingKey<Bn254>,
     pub vk: VerifyingKey<Bn254>,
 }
 
+#[cfg(feature = "dev-groth16")]
 impl DeciderKeys {
     /// Generates the keys from locally sampled randomness.
     ///
@@ -504,6 +520,7 @@ impl DeciderKeys {
     }
 }
 
+#[cfg(feature = "dev-groth16")]
 /// The constant-size proof verified by `finalizeWithProof`.
 #[derive(Clone, Debug)]
 pub struct OnChainDeciderProof {
@@ -518,6 +535,7 @@ pub struct OnChainDeciderProof {
     pub groth16: Proof<Bn254>,
 }
 
+#[cfg(feature = "dev-groth16")]
 /// Exactly the checks `finalizeWithProof` performs on the final accumulator.
 pub fn verify_onchain_decider(
     params: &EvmParams,

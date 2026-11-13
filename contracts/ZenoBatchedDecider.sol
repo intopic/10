@@ -63,7 +63,7 @@ contract ZenoBatchedDecider {
     /// `(L, Rt)` such that the proof is valid iff `e(L, G₂) = e(Rt, [τ]₂)`,
     /// with `[τ]₂` the one in every key; reverts if any other check fails.
     /// @param vks every instance's circuit identifier.
-    /// @param keys every circuit's key (23 words; same dimensions and `[τ]₂`).
+    /// @param keys every circuit's key (24 words; same dimensions and `[τ]₂`).
     /// @param accs every accumulator `[comm_E, u, comm_W, x…]`.
     function verifyDeferred(
         bytes32[] calldata vks,
@@ -75,7 +75,10 @@ contract ZenoBatchedDecider {
         if (n == 0 || keys.length != n || accs.length != n) revert MalformedInput();
         Run memory run;
         for (uint256 i = 0; i < n; ++i) {
-            if (keys[i].length != 23 || accs[i].length < 6) revert MalformedInput();
+            // Exactly the circuit's public inputs (see ZenoUniversalDecider).
+            if (keys[i].length != 24 || accs[i].length < 6 || accs[i].length != 5 + keys[i][23]) {
+                revert MalformedInput();
+            }
             for (uint256 k = 0; k < 3; ++k) {
                 if (keys[i][k] != keys[0][k]) revert MalformedInput();
             }
@@ -99,7 +102,7 @@ contract ZenoBatchedDecider {
                 head = abi.encodePacked(
                     head,
                     vks[i],
-                    keccak256(abi.encodePacked(keys[i][0:17])),
+                    keccak256(abi.encodePacked(keys[i])),
                     accs[i],
                     run.blinds[2 * i],
                     run.blinds[2 * i + 1]

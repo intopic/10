@@ -1,9 +1,19 @@
-//! Emits a deterministic end-to-end scenario for the contract tests as JSON:
-//! calldata for every call and the accumulator the prover expects on-chain
-//! after each of them, plus the off-chain decider's verdict.
+//! **A TEST TOOL, NOT A PROVER.** Emits a deterministic end-to-end scenario
+//! for the contract tests as JSON: calldata for every call and the
+//! accumulator the prover expects on-chain after each of them, plus the
+//! off-chain decider's verdict.
+//!
+//! All its randomness comes from a fixed seed, so the blinding factors and
+//! the masking instance are predictable: its proofs are **not
+//! zero-knowledge** and must never carry a real witness. Production provers
+//! call the library (`OnChainFolder`, `recursive::prove`) with an OS random
+//! number generator.
 //!
 //! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--rounds N]
-//!        [--mode transparent|onchain|universal|recursive] [--ptau FILE]`
+//!        [--mode transparent|universal|recursive|onchain] [--ptau FILE]`
+//!
+//! Modes: `transparent` = mode A, `universal` = mode B, `recursive` = mode D,
+//! `onchain` = mode C (Groth16, development only, feature `dev-groth16`).
 //!
 //! `recursive` runs the CycleFold IVC for `--steps` steps and emits the
 //! `finalizeRecursive` call (over a 2^20-power reference string: `--ptau`, or
@@ -14,9 +24,10 @@
 
 use ark_bn254::Fr;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
+#[cfg(feature = "dev-groth16")]
+use evm_verifier::DeciderKeys;
 use evm_verifier::{
-    abi, kzg::Srs, point_words, universal, verify_final, word, DeciderKeys, EvmParams,
-    OnChainFolder, Word,
+    abi, kzg::Srs, point_words, universal, verify_final, word, EvmParams, OnChainFolder, Word,
 };
 use llull_folder::{core_r1cs::RelaxedR1CSInstance, demo_circuit::CubicChain};
 
@@ -39,6 +50,9 @@ fn acc_json(acc: &RelaxedR1CSInstance<ark_bn254::G1Projective>) -> String {
 }
 
 fn main() {
+    eprintln!(
+        "zeno-evm-fixture: TEST TOOL with a fixed random seed; its proofs are not zero-knowledge"
+    );
     let mut session = [0u8; 32];
     let mut steps = 5usize;
     let mut onchain = false;
@@ -62,6 +76,10 @@ fn main() {
             "--ptau" => ptau_path = Some(value),
             "--mode" => {
                 onchain = value == "onchain";
+                assert!(
+                    !onchain || cfg!(feature = "dev-groth16"),
+                    "--mode onchain (mode C, Groth16, development only) needs the `dev-groth16` feature"
+                );
                 universal_mode = value == "universal";
                 recursive_mode = value == "recursive";
             }
@@ -161,6 +179,7 @@ fn main() {
         );
         return;
     }
+    #[cfg(feature = "dev-groth16")]
     if onchain {
         let keys = DeciderKeys::insecure_for_testing(&params, &mut rng).expect("decider keys");
         let key = abi::decider_key(&params, &keys.vk);

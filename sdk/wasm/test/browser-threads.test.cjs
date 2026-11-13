@@ -16,7 +16,7 @@ const MAX_STEP_MS = Number(process.env.MAX_STEP_MS ?? 0);
 const PAGE = `<!doctype html><meta charset="utf-8"><script type="module">
 import init, { initThreadPool, ZenoLlullProver, ZenoLlullVerifier, wasmMemoryBytes } from "/dist/sdk_bindings.js";
 const bytes = async (url) => new Uint8Array(await (await fetch(url)).arrayBuffer());
-window.run = async () => {
+window.run = async (license) => {
   await init();
   const threads = navigator.hardwareConcurrency;
   await initThreadPool(threads);
@@ -24,7 +24,7 @@ window.run = async () => {
   const wtns = [];
   for (let i = 0; i < 3; i++) wtns.push(await bytes("/fixtures/step" + i + ".wtns"));
   let t = performance.now();
-  const prover = new ZenoLlullProver(r1cs, ["3"]);
+  const prover = new ZenoLlullProver(license, r1cs, ["3"]);
   const setupMs = performance.now() - t;
   t = performance.now();
   for (const w of wtns) prover.proveStep(w);
@@ -71,7 +71,10 @@ const server = http.createServer((req, res) => {
     page.on("pageerror", (e) => console.error("page error:", e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.waitForFunction(() => typeof window.run === "function");
-    const r = await page.evaluate(() => window.run());
+    // The prover runs only under a license (a package built without a
+    // vendor key checks against the development key: `zeno-license issue --dev`).
+    assert.ok(process.env.ZENO_TEST_LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
+    const r = await page.evaluate((license) => window.run(license), process.env.ZENO_TEST_LICENSE);
     console.log(`threads          : ${r.threads} (cross-origin isolated: ${r.crossOriginIsolated})`);
     console.log(`setup            : ${r.setupMs.toFixed(0)} ms`);
     console.log(`prover           : ${r.stepMs.toFixed(0)} ms / step`);

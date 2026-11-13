@@ -16,6 +16,9 @@ const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/rele
 const MAX_STEP_GAS = 300_000n;
 const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step
 const STEPS = 5;
+// Mode C (Groth16) is development only: it is tested when the fixture was
+// built with `--features dev-groth16` and ZENO_DEV_GROTH16=1 is set.
+const DEV_GROTH16 = process.env.ZENO_DEV_GROTH16 === "1";
 
 function compile() {
   const read = (name) => ({ content: fs.readFileSync(path.join(__dirname, "..", name), "utf8") });
@@ -24,6 +27,7 @@ function compile() {
     sources: {
       "ZenoLlullVerifier.sol": read("ZenoLlullVerifier.sol"),
       "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
+      "dev/ZenoLlullVerifierDevGroth16.sol": read("dev/ZenoLlullVerifierDevGroth16.sol"),
     },
     settings: {
       optimizer: { enabled: true, runs: 200 },
@@ -38,7 +42,10 @@ function compile() {
   const warnings = (out.errors ?? []).filter((e) => e.severity === "warning");
   assert.equal(warnings.length, 0, warnings.map((e) => e.formattedMessage).join("\n"));
   return {
-    verifier: out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
+    verifier: DEV_GROTH16
+      ? out.contracts["dev/ZenoLlullVerifierDevGroth16.sol"].ZenoLlullVerifierDevGroth16
+      : out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
+    production: out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
     decider: out.contracts["ZenoUniversalDecider.sol"].ZenoUniversalDecider,
   };
 }
@@ -64,9 +71,33 @@ const intrinsicGas = (data) =>
     await evm.stateManager.putAccount(a, new Account(0n, 10n ** 18n));
   }
 
+  // The production contract has no Groth16 decider and no way to replace
+  // the universal decider.
+  for (const name of ["finalizeWithProof", "registerDevDeciderKey", "setUniversalDecider", "deciderKeyHash"]) {
+    const found = Object.keys(compiled.production.evm.methodIdentifiers).filter((m) => m.startsWith(name + "("));
+    assert.deepEqual(found, [], `${name} must not be in the production contract`);
+  }
+
+  // The universal decider is deployed first and fixed in the constructor.
+  const deployDecider = await evm.runCall({
+    caller: owner,
+    data: hexToBytes("0x" + compiled.decider.evm.bytecode.object),
+    gasLimit: 10_000_000n,
+  });
+  assert.equal(deployDecider.execResult.exceptionError, undefined, "decider deployment failed");
+  console.log(`universal decider    : ${deployDecider.execResult.executionGasUsed} gas to deploy`);
+  const deciderAddress = deployDecider.createdAddress;
+  // An address without code is refused.
+  const noDecider = await evm.runCall({
+    caller: owner,
+    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(0xdeadn)),
+    gasLimit: 10_000_000n,
+  });
+  assert.notEqual(noDecider.execResult.exceptionError, undefined, "a decider without code was accepted");
+
   const deploy = await evm.runCall({
     caller: owner,
-    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE)),
+    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(BigInt(deciderAddress.toString()))),
     gasLimit: 10_000_000n,
   });
   assert.equal(deploy.execResult.exceptionError, undefined, "deployment failed");
@@ -170,7 +201,16 @@ const intrinsicGas = (data) =>
 
   assert.equal(final.decided, false, "transparent mode is decided off-chain only");
 
-  // --- Mode B: on-chain decider (KZG openings + Groth16) -----------------------
+  const flip = (hex, byteOffset) => {
+    const i = 2 + 2 * byteOffset;
+    const b = (parseInt(hex.slice(i, i + 2), 16) ^ 1).toString(16).padStart(2, "0");
+    return hex.slice(0, i) + b + hex.slice(i + 2);
+  };
+
+  // --- Mode C: Groth16 decider, development only -----------------------------
+  let devSteps = 0;
+  if (DEV_GROTH16) {
+  devSteps = STEPS;
   const preB = fixture(["--steps", "1", "--mode", "onchain"]);
   const openedB = await call(prover, preB.open);
   assert.ok(openedB.ok);
@@ -185,12 +225,6 @@ const intrinsicGas = (data) =>
   assert.ok((await call(owner, fb.register)).ok);
   await revertsWith(call(owner, fb.register), "CircuitAlreadyRegistered()");
 
-  // Forgeries: flip one bit in each of the 17 proof words and in the key.
-  const flip = (hex, byteOffset) => {
-    const i = 2 + 2 * byteOffset;
-    const b = (parseInt(hex.slice(i, i + 2), 16) ^ 1).toString(16).padStart(2, "0");
-    return hex.slice(0, i) + b + hex.slice(i + 2);
-  };
   const proofStart = 4 + 64; // selector, sessionId, offset of maskProof
   for (let w = 0; w < 17; w++) {
     const res = await call(prover, flip(fwp, proofStart + 32 * w + 31));
@@ -212,20 +246,16 @@ const intrinsicGas = (data) =>
   assert.deepEqual(finalB.state, [fb.steps[STEPS - 1].state]);
   await revertsWith(call(prover, fwp), "SessionClosed()");
   assert.ok(fb.finalizeWithProof.proofBytes < 4096);
+  } else {
+    console.log("finalizeWithProof    : skipped (mode C is development only; set ZENO_DEV_GROTH16=1)");
+  }
 
   let extraStepsEarly = 0;
   // --- Universal decider: no per-circuit keys ----------------------------------
-  const deployDecider = await evm.runCall({
-    caller: owner,
-    data: hexToBytes("0x" + compiled.decider.evm.bytecode.object),
-    gasLimit: 10_000_000n,
-  });
-  assert.equal(deployDecider.execResult.exceptionError, undefined, "decider deployment failed");
-  console.log(`universal decider    : ${deployDecider.execResult.executionGasUsed} gas to deploy`);
-  const setDecider =
-    "0x" + sel["setUniversalDecider(address)"] + word(BigInt(deployDecider.createdAddress.toString()));
-  await revertsWith(call(stranger, setDecider), "NotOwner()");
-  assert.ok((await call(owner, setDecider)).ok);
+  {
+    const got = await call(stranger, "0x" + sel["universalDecider()"]);
+    assert.equal(BigInt(got.ret), BigInt(deciderAddress.toString()), "the decider fixed at deployment");
+  }
 
   const preU = fixture(["--steps", "1", "--mode", "universal"]);
   const openedU = await call(prover, preU.open);
@@ -254,6 +284,41 @@ const intrinsicGas = (data) =>
   // A truncated proof is malformed, not accepted.
   assert.equal((await call(prover, fin2.calldata.slice(0, -64))).ok, false);
   assert.equal((await readAccumulator(fu.getAccumulator)).finalized, false);
+
+  // Regression (public-input count): the decider itself, called directly,
+  // accepts the proof for the accumulator the contract will hold, and
+  // refuses the same call with one more public input — a value no
+  // constraint of the circuit touches — as malformed.
+  {
+    const dsel = compiled.decider.evm.methodIdentifiers["verify(bytes32,uint256[],uint256[],uint256[])"];
+    const body = fin2.calldata.slice(2);
+    const words = (start, n) => body.slice(2 * start, 2 * (start + 32 * n));
+    const key = words(uKeyStart, fin2.keyWords);
+    const proof = words(uProofStart, fin2.proofWords);
+    assert.equal(fin2.keyWords, 24);
+    assert.equal(BigInt("0x" + key.slice(-64)), 2n, "the key's last word is the number of public inputs");
+    const direct = async (acc) => {
+      const accWords = acc.map((w) => w.slice(2)).join("");
+      const o1 = 4 * 32;
+      const o2 = o1 + 32 * (1 + fin2.keyWords);
+      const o3 = o2 + 32 * (1 + acc.length);
+      const data =
+        "0x" + dsel + fu.vk.slice(2) + word(BigInt(o1)) + word(BigInt(o2)) + word(BigInt(o3)) +
+        word(BigInt(fin2.keyWords)) + key + word(BigInt(acc.length)) + accWords +
+        word(BigInt(fin2.proofWords)) + proof;
+      const res = await evm.runCall({ caller: stranger, to: deciderAddress, data: hexToBytes(data), gasLimit: 5_000_000n });
+      return { ok: res.execResult.exceptionError === undefined, ret: bytesToHex(res.execResult.returnValue) };
+    };
+    const honest = await direct(fin2.accumulator);
+    assert.ok(honest.ok && BigInt(honest.ret) === 1n, "the decider accepts the honest accumulator");
+    const { keccak256 } = require("ethereum-cryptography/keccak.js");
+    const malformed = bytesToHex(keccak256(Buffer.from("MalformedInput()"))).slice(0, 10);
+    for (const acc of [[...fin2.accumulator, "0x" + word(0n)], [...fin2.accumulator, "0x" + word(7n)], fin2.accumulator.slice(0, -1)]) {
+      const res = await direct(acc);
+      assert.equal(res.ok, false, "an accumulator with another number of public inputs was accepted");
+      assert.equal(res.ret.slice(0, 10), malformed, "refused as malformed input");
+    }
+  }
 
   const decidedU = await call(prover, fin2.calldata);
   assert.ok(decidedU.ok, "finalizeUniversal reverted");
@@ -328,14 +393,14 @@ const intrinsicGas = (data) =>
 
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  assert.equal(await balance(to), FEE * BigInt(3 * STEPS + extraSteps));
+  assert.equal(await balance(to), FEE * BigInt(2 * STEPS + devSteps + extraSteps));
   const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(owner.toString()));
   await revertsWith(call(stranger, withdraw), "NotOwner()");
   await revertsWith(call(stranger, "0x" + sel["setProtocolFee(uint256)"] + word(0n)), "NotOwner()");
   const before = await balance(owner);
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
-  assert.equal((await balance(owner)) - before, FEE * BigInt(3 * STEPS + extraSteps));
+  assert.equal((await balance(owner)) - before, FEE * BigInt(2 * STEPS + devSteps + extraSteps));
   console.log("OK");
 })().catch((e) => {
   console.error(e);

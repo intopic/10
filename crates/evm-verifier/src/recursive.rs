@@ -54,13 +54,11 @@ use llull_folder::{
 use sha3::{Digest, Keccak256};
 use zeno_ivc::{
     cyclefold::{
-        augmented::{absorb_cf_acc, absorb_primary},
         circuit::CF_SLOTS,
         closing::ClosingCircuit,
         hyrax::{eq_table, hyrax_open, CfRelaxedInstance, CfRelaxedWitness},
         CycleFoldAccumulator, CycleFoldParams, CF_COLUMNS, CF_IO_LEN,
     },
-    gadgets::ec::odd_t,
     IvcError, StepCircuit,
 };
 
@@ -323,22 +321,19 @@ fn cf_prove(
     (outer, claims, inner, rx, ry, v_w)
 }
 
-/// The closing circuit's public input, as the verifier assembles it.
+/// The closing circuit's public input, as the verifier assembles it
+/// ([`ClosingCircuit::inputs`], with `h` the last instance's public input).
 fn closing_inputs(st: Statement, weights: &[Fq], combined: &[Fq]) -> Vec<Fr> {
-    let mut x = alloc::vec![st.last.x[0], Fr::from(st.i)];
-    x.extend_from_slice(st.z0);
-    x.extend_from_slice(st.zi);
-    absorb_primary(&mut x, st.acc);
-    absorb_cf_acc(&mut x, st.cf_acc);
-    for s in weights {
-        x.extend(llull_folder::transcript::scalar_to_limbs::<Fq, Fr>(&odd_t(
-            *s,
-        )));
-    }
-    for c in combined {
-        x.extend(llull_folder::transcript::scalar_to_limbs::<Fq, Fr>(c));
-    }
-    x
+    ClosingCircuit::<Bn254Config, GrumpkinConfig>::inputs(
+        st.last.x[0],
+        st.i,
+        st.z0,
+        st.zi,
+        st.acc,
+        st.cf_acc,
+        weights,
+        combined,
+    )
 }
 
 /// Row weights `s = (γ·L_W, L_E)` and the combined row `c = γ·w' + e'`.

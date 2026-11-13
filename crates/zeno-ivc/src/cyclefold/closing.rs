@@ -116,19 +116,47 @@ where
         )
     }
 
-    /// The public input, as the verifier assembles it.
+    /// The public input of an honest statement (with the state hash
+    /// recomputed from the state).
     pub fn public_inputs(&self) -> Vec<G1::ScalarField> {
-        let mut x = alloc::vec![self.hash(), G1::ScalarField::from(self.i)];
-        x.extend_from_slice(&self.z0);
-        x.extend_from_slice(&self.zi);
-        absorb_primary(&mut x, &self.acc);
-        absorb_cf_acc(&mut x, &self.cf_acc);
-        for s in &self.row_weights {
+        Self::inputs(
+            self.hash(),
+            self.i,
+            &self.z0,
+            &self.zi,
+            &self.acc,
+            &self.cf_acc,
+            &self.row_weights,
+            &self.combined,
+        )
+    }
+
+    /// The public input as a verifier assembles it from a claimed state: `h`
+    /// is the public input of the last primary instance, which the circuit
+    /// then proves to be the state hash. This is the one definition of the
+    /// layout (the contract mirrors it in `_closingInstance`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn inputs(
+        h: G1::ScalarField,
+        i: u64,
+        z0: &[G1::ScalarField],
+        zi: &[G1::ScalarField],
+        acc: &RelaxedR1CSInstance<Projective<G1>>,
+        cf_acc: &CfRelaxedInstance<Projective<G2>>,
+        row_weights: &[G2::ScalarField],
+        combined: &[G2::ScalarField],
+    ) -> Vec<G1::ScalarField> {
+        let mut x = alloc::vec![h, G1::ScalarField::from(i)];
+        x.extend_from_slice(z0);
+        x.extend_from_slice(zi);
+        absorb_primary(&mut x, acc);
+        absorb_cf_acc(&mut x, cf_acc);
+        for s in row_weights {
             x.extend(scalar_to_limbs::<G2::ScalarField, G2::BaseField>(&odd_t(
                 *s,
             )));
         }
-        for c in &self.combined {
+        for c in combined {
             x.extend(scalar_to_limbs::<G2::ScalarField, G2::BaseField>(c));
         }
         x

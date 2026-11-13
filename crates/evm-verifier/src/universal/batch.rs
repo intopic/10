@@ -144,7 +144,8 @@ fn common_dims(items: &[Item]) -> Option<Dims> {
         it.key.dims == dims
             && it.params.tau_g2.is_some()
             && it.params.tau_g2 == first.params.tau_g2
-            && it.acc.x.len() == it.params.shape.num_io
+            && it.acc.x.len() == it.key.num_io
+            && it.key.num_io == it.params.shape.num_io
             && it.params.ck.len() == first.params.ck.len()
     });
     ok.then_some(dims)
@@ -155,7 +156,7 @@ fn start(items: &[Item], blinds: &[[Fr; 2]]) -> KeccakTranscript {
     let mut words = alloc::vec![word(&Fr::from(items.len() as u64))];
     for (it, b) in items.iter().zip(blinds) {
         words.push(it.params.vk);
-        words.push(it.key.digest());
+        words.push(it.key.transcript_digest(it.params).expect("KZG parameters"));
         words.extend(point_words(&it.acc.comm_e));
         words.push(word(&it.acc.u));
         words.extend(point_words(&it.acc.comm_w));

@@ -7,6 +7,14 @@ import pathlib
 import sys
 import time
 
+# The prover runs only under a license. A library built without a vendor key
+# (as in CI) checks against the public development key:
+#   test_sdk.py "$(zeno-license issue --dev --customer ci --plan enterprise --days 1)" \
+#               ["$(zeno-license issue --dev ... --max-steps 2)" [FOREIGN_LICENSE]]
+if len(sys.argv) < 2:
+    sys.exit("usage: test_sdk.py LICENSE [QUOTA_LICENSE [FOREIGN_LICENSE]]")
+LICENSE = sys.argv[1]
+
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "sdk/native/dist/python"))
 import zenollull  # noqa: E402
@@ -24,14 +32,14 @@ def expect_error(kind, call):
     raise AssertionError(f"expected {kind.__name__}")
 
 
-prover = zenollull.Prover(r1cs, ["3"])
+prover = zenollull.Prover(LICENSE, r1cs, ["3"])
 assert prover.steps() == 0 and prover.state() == ["3"]
 
 # A witness for a later step does not continue from the current state.
 expect_error(zenollull.ZenoError.InvalidInput, lambda: prover.prove_step(witnesses[1]))
 expect_error(zenollull.ZenoError.InvalidInput, lambda: prover.prove_step(b"junk"))
-expect_error(zenollull.ZenoError.InvalidInput, lambda: zenollull.Prover(r1cs, ["x"]))
-expect_error(zenollull.ZenoError.InvalidInput, lambda: zenollull.Prover(r1cs[:50], ["3"]))
+expect_error(zenollull.ZenoError.InvalidInput, lambda: zenollull.Prover(LICENSE, r1cs, ["x"]))
+expect_error(zenollull.ZenoError.InvalidInput, lambda: zenollull.Prover(LICENSE, r1cs[:50], ["3"]))
 
 start = time.time()
 for wtns in witnesses:
@@ -55,16 +63,25 @@ expect_error(zenollull.ZenoError.VerificationFailed, lambda: verifier.verify(byt
 expect_error(zenollull.ZenoError.VerificationFailed, lambda: verifier.verify(b""))
 assert verifier.verifications() == 3
 
-expect_error(
-    zenollull.ZenoError.License,
-    lambda: zenollull.verify_license("zl1.YQ.Yg", "00" * 32, int(time.time())),
-)
-if len(sys.argv) == 3:
-    lic = zenollull.verify_license(sys.argv[1], sys.argv[2], int(time.time()))
-    assert lic.customer == "ci"
-    print(f"license  : {lic.customer} / {lic.plan}")
-    expect_error(
-        zenollull.ZenoError.License,
-        lambda: zenollull.verify_license(sys.argv[1], sys.argv[2], 4_000_000_000),
-    )
+# License keys are checked against the vendor key compiled into the library;
+# the caller cannot supply a key or a clock of its own.
+expect_error(zenollull.ZenoError.License, lambda: zenollull.verify_license("zl1.YQ.Yg"))
+lic = zenollull.verify_license(LICENSE)
+assert lic.customer == "ci" and lic.max_steps is None
+print(f"license  : {lic.customer} / {lic.plan}" + (" (development build)" if lic.development_build else ""))
+# No prover without a license or with a forged one.
+expect_error(zenollull.ZenoError.License, lambda: zenollull.Prover("", r1cs, ["3"]))
+expect_error(zenollull.ZenoError.License, lambda: zenollull.Prover(LICENSE[:-4] + "AAAA", r1cs, ["3"]))
+if len(sys.argv) > 3:
+    # Signed by another key than the one this library was built with.
+    expect_error(zenollull.ZenoError.License, lambda: zenollull.Prover(sys.argv[3], r1cs, ["3"]))
+if len(sys.argv) > 2:
+    # A quota of two steps: the third step is refused.
+    assert zenollull.verify_license(sys.argv[2]).max_steps == 2
+    limited = zenollull.Prover(sys.argv[2], r1cs, ["3"])
+    limited.prove_step(witnesses[0])
+    limited.prove_step(witnesses[1])
+    expect_error(zenollull.ZenoError.License, lambda: limited.prove_step(witnesses[2]))
+    assert limited.steps() == 2
+    print("quota    : third step refused under a 2-step license")
 print("OK")

@@ -18,13 +18,18 @@ pragma solidity ^0.8.24;
 /// accumulated witness satisfies the circuit is decided at the end, in one of
 /// two modes:
 ///
-/// - `finalizeWithProof` (on-chain decider): the contract itself verifies two
-///   KZG openings and one Groth16 proof against the final accumulator and
-///   marks the session `decided`. A decided session's `state` is the result
-///   of `steps` valid applications of the step function to `z0`.
-/// - `finalize` (transparent mode): the session is only closed; a succinct
+/// - `finalizeUniversal` (mode B, on-chain decider): the universal decider
+///   contract fixed at deployment verifies the final accumulator against the
+///   circuit key the session was opened for, and the session is marked
+///   `decided`. A decided session's `state` is the result of `steps` valid
+///   applications of the step function to `z0`: the key fixes the circuit's
+///   number of public inputs, and the decider accepts no other.
+/// - `finalize` (mode A, transparent): the session is only closed; a succinct
 ///   transparent proof is verified off-chain against the final accumulator
 ///   (`evm-verifier::verify_final`). Such a session is never `decided`.
+///
+/// The Groth16 decider of early development (mode C) lives in
+/// `dev/ZenoLlullVerifierDevGroth16.sol` and is not part of this contract.
 interface IZenoUniversalDecider {
     function verify(
         bytes32 vk,
@@ -41,8 +46,6 @@ contract ZenoLlullVerifier {
     uint256 internal constant CHALLENGE_MASK = (1 << 128) - 1;
     uint256 internal constant TAG_FOLD = 1;
     uint256 internal constant TAG_MASK = 3;
-    uint256 internal constant TAG_POINT = 5;
-    uint256 internal constant TAG_BATCH = 6;
 
     /// Modulus of the BN254 base field.
     uint256 internal constant Q =
@@ -78,18 +81,15 @@ contract ZenoLlullVerifier {
     /// Fee in wei charged for every folded step.
     uint256 public protocolFee;
     uint256 public sessionCount;
-    mapping(bytes32 => Session) private sessions;
-    /// Hash of the Groth16 decider key registered for each circuit `vk`
-    /// (development mode: these keys are circuit-specific).
-    mapping(bytes32 => bytes32) public deciderKeyHash;
-    /// The universal decider verifier contract.
-    IZenoUniversalDecider public universalDecider;
+    mapping(bytes32 => Session) internal sessions;
+    /// The universal decider verifier contract, fixed at deployment: nobody
+    /// can replace the code that decides sessions.
+    IZenoUniversalDecider public immutable universalDecider;
 
     event SessionOpened(bytes32 indexed sessionId, address indexed prover, bytes32 vk);
     event StepFolded(bytes32 indexed sessionId, uint64 step);
     event SessionFinalized(bytes32 indexed sessionId, uint64 steps, bytes32 accumulatorHash);
     event SessionDecided(bytes32 indexed sessionId, uint64 steps);
-    event CircuitRegistered(bytes32 indexed vk, bytes32 keyHash);
     event CircuitAnnounced(bytes32 indexed circuitId, address indexed by, uint256[] key);
     event ProtocolFeeChanged(uint256 fee);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -103,7 +103,6 @@ contract ZenoLlullVerifier {
     error StateMismatch();
     error InvalidPoint();
     error TransferFailed();
-    error CircuitAlreadyRegistered();
     error UnknownDeciderKey();
     error InvalidDeciderProof();
 
@@ -112,7 +111,9 @@ contract ZenoLlullVerifier {
         _;
     }
 
-    constructor(uint256 fee) {
+    constructor(uint256 fee, IZenoUniversalDecider decider) {
+        if (address(decider).code.length == 0) revert UnknownDeciderKey();
+        universalDecider = decider;
         owner = msg.sender;
         protocolFee = fee;
         emit OwnershipTransferred(address(0), msg.sender);
@@ -242,104 +243,12 @@ contract ZenoLlullVerifier {
         emit SessionFinalized(sessionId, s.steps, accumulatorHash(sessionId));
     }
 
-    /// @notice Closes the session like `finalize` and verifies on-chain that
-    /// the final accumulator is satisfiable, marking the session `decided`.
-    /// @param proof `[W(c), E(c), r_W, r_E, π_W, π_E, A, B, C, d]`: the two
-    /// evaluations, the commitment blindings, the two KZG opening proofs, the
-    /// Groth16 proof and the digest `d` of the witness inside that proof.
-    /// The evaluation point is derived from `d`, so the Groth16 witness is
-    /// fixed before the point at which it is compared with the commitments.
-    /// @param key the decider key registered for the session's circuit:
-    /// `[H, [τ]₂, α, β, γ, δ, IC…]`.
-    function finalizeWithProof(
-        bytes32 sessionId,
-        bytes calldata maskProof,
-        uint256[17] calldata proof,
-        uint256[] calldata key
-    ) external {
-        Session storage s = _foldMask(sessionId, maskProof);
-        bytes32 keyHash = deciderKeyHash[s.vk];
-        if (keyHash == bytes32(0) || keccak256(abi.encodePacked(key)) != keyHash) {
-            revert UnknownDeciderKey();
-        }
-        uint256[] memory x = s.x;
-        if (key.length != 20 + 2 * (x.length + 6)) revert UnknownDeciderKey();
-        if (proof[0] >= R || proof[1] >= R || proof[2] >= R || proof[3] >= R || proof[16] >= R) {
-            revert ScalarOutOfRange();
-        }
-
-        // Evaluation point and batching challenge.
-        uint256 c = uint256(
-            keccak256(abi.encodePacked(TAG_POINT, s.vk, s.ex, s.ey, s.u, s.wx, s.wy, x, proof[16]))
-        ) % R;
-        uint256 g = uint256(
-            keccak256(
-                abi.encodePacked(TAG_BATCH, c, proof[0], proof[1], proof[4], proof[5], proof[6], proof[7])
-            )
-        ) % R;
-
-        uint256[36] memory pairs;
-        // KZG, both openings batched with g:
-        //   P = comm_W + g·comm_E − (r_W + g·r_E)·H − (W(c) + g·E(c))·G + c·π,   π = π_W + g·π_E
-        //   e(P, G₂) · e(−π, [τ]₂) = 1
-        {
-            (uint256 px, uint256 py) = _addMul(s.wx, s.wy, s.ex, s.ey, g);
-            (px, py) = _addMul(px, py, key[0], _neg(key[1]), addmod(proof[2], mulmod(g, proof[3], R), R));
-            (px, py) = _addMul(px, py, 1, Q - 2, addmod(proof[0], mulmod(g, proof[1], R), R));
-            (uint256 qx, uint256 qy) = _addMul(proof[4], proof[5], proof[6], proof[7], g);
-            (px, py) = _addMul(px, py, qx, qy, c);
-            pairs[0] = px;
-            pairs[1] = py;
-            pairs[2] = G2_X_IM;
-            pairs[3] = G2_X_RE;
-            pairs[4] = G2_Y_IM;
-            pairs[5] = G2_Y_RE;
-            pairs[6] = qx;
-            pairs[7] = _neg(qy);
-            for (uint256 i = 0; i < 4; ++i) pairs[8 + i] = key[2 + i];
-        }
-        // Groth16 with public inputs (u, x, d, c, W(c), E(c)):
-        //   e(−A, B) · e(α, β) · e(IC₀ + Σ inᵢ·ICᵢ, γ) · e(C, δ) = 1
-        {
-            (uint256 vx, uint256 vy) = _addMul(key[20], key[21], key[22], key[23], s.u);
-            uint256 n = x.length;
-            for (uint256 i = 0; i < n; ++i) {
-                (vx, vy) = _addMul(vx, vy, key[24 + 2 * i], key[25 + 2 * i], x[i]);
-            }
-            (vx, vy) = _addMul(vx, vy, key[24 + 2 * n], key[25 + 2 * n], proof[16]);
-            (vx, vy) = _addMul(vx, vy, key[26 + 2 * n], key[27 + 2 * n], c);
-            (vx, vy) = _addMul(vx, vy, key[28 + 2 * n], key[29 + 2 * n], proof[0]);
-            (vx, vy) = _addMul(vx, vy, key[30 + 2 * n], key[31 + 2 * n], proof[1]);
-            pairs[12] = proof[8];
-            pairs[13] = _neg(proof[9]);
-            for (uint256 i = 0; i < 4; ++i) pairs[14 + i] = proof[10 + i];
-            pairs[18] = key[6];
-            pairs[19] = key[7];
-            for (uint256 i = 0; i < 4; ++i) pairs[20 + i] = key[8 + i];
-            pairs[24] = vx;
-            pairs[25] = vy;
-            for (uint256 i = 0; i < 4; ++i) pairs[26 + i] = key[12 + i];
-            pairs[30] = proof[14];
-            pairs[31] = proof[15];
-            for (uint256 i = 0; i < 4; ++i) pairs[32 + i] = key[16 + i];
-        }
-        bool ok;
-        uint256[1] memory out;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x08, pairs, 0x480, out, 0x20)
-        }
-        if (!ok || out[0] != 1) revert InvalidDeciderProof();
-
-        s.decided = true;
-        emit SessionFinalized(sessionId, s.steps, accumulatorHash(sessionId));
-        emit SessionDecided(sessionId, s.steps);
-    }
-
     /// @notice Closes the session like `finalize` and verifies on-chain, with
     /// the universal decider, that the final accumulator is satisfiable.
     /// No circuit-specific key or setup is involved: `key` holds the public
-    /// commitments to the circuit's matrices, and the session must have been
-    /// opened with `vk = keccak256(key)`.
+    /// commitments to the circuit's matrices and its number of public
+    /// inputs, and the session must have been opened with
+    /// `vk = keccak256(key)` and a state of the circuit's arity.
     function finalizeUniversal(
         bytes32 sessionId,
         bytes calldata maskProof,
@@ -371,27 +280,8 @@ contract ZenoLlullVerifier {
         emit CircuitAnnounced(circuitId, msg.sender, key);
     }
 
-    function setUniversalDecider(IZenoUniversalDecider decider) external onlyOwner {
-        universalDecider = decider;
-    }
-
-    /// @notice Development mode only (Groth16 decider, whose keys are
-    /// circuit-specific and come from a setup the owner vouches for).
-    /// Registers the decider key of a circuit: the blinding generator
-    /// `H`, `[τ]₂` of the KZG reference string and the Groth16 verifying key
-    /// of the circuit's decider. Only its hash is stored; the key itself is
-    /// passed with `finalizeWithProof`. Registration is permanent.
-    /// @dev The owner vouches that `keyHash` belongs to `vk`; sessions of a
-    /// circuit are only as sound as its registered key.
-    function registerDevDeciderKey(bytes32 vk, bytes32 keyHash) external onlyOwner {
-        if (deciderKeyHash[vk] != bytes32(0)) revert CircuitAlreadyRegistered();
-        if (keyHash == bytes32(0)) revert UnknownDeciderKey();
-        deciderKeyHash[vk] = keyHash;
-        emit CircuitRegistered(vk, keyHash);
-    }
-
     function _foldMask(bytes32 sessionId, bytes calldata maskProof)
-        private
+        internal
         returns (Session storage s)
     {
         s = sessions[sessionId];
@@ -468,6 +358,7 @@ contract ZenoLlullVerifier {
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert NotOwner();
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
@@ -477,14 +368,14 @@ contract ZenoLlullVerifier {
     // ------------------------------------------------------------------
 
     /// @dev Negation of a G1 point's y-coordinate; the identity stays `(0, 0)`.
-    function _neg(uint256 y) private pure returns (uint256) {
+    function _neg(uint256 y) internal pure returns (uint256) {
         return y == 0 ? 0 : Q - y;
     }
 
     /// @dev Returns `(ax, ay) + s·(bx, by)`. The precompiles reject points
     /// that are not on the curve; the identity is encoded as `(0, 0)`.
     function _addMul(uint256 ax, uint256 ay, uint256 bx, uint256 by, uint256 s)
-        private
+        internal
         view
         returns (uint256, uint256)
     {
