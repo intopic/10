@@ -32,6 +32,7 @@ core-r1cs = { path = "../core-r1cs" }
 default = ["parallel", "cli"]
 # The prover's commitments use `msm::msm` (batched affine additions) instead
 # of the arkworks multi-scalar multiplication; checks always use arkworks.
+# On by default in zeno-ivc, decider-zk, evm-verifier and sdk-bindings.
 batch-affine-msm = []
 parallel = [
     "dep:rayon",

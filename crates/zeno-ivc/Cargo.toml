@@ -32,7 +32,7 @@ ark-bn254.workspace = true
 ark-grumpkin.workspace = true
 
 [features]
-default = ["parallel", "cli"]
+default = ["parallel", "cli", "batch-affine-msm"]
 # The prover's commitments with batched affine additions (llull-folder::msm).
 batch-affine-msm = ["llull-folder/batch-affine-msm"]
 parallel = [

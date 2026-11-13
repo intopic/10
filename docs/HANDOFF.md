@@ -168,8 +168,9 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 4. **Hyrje nga Noir dhe ONNX (zkML)**; vetëm Circom mbështetet.
 5. **Avancimet opsionale të specifikimit**: CCS/HyperNova, SuperNova, SIMD.
 6. **Optimizimi i MSM-së** (koha e hapit). MSM-ja me mbledhje afine të grupuara
-   është ndërtuar (`llull-folder::msm`, feature `batch-affine-msm`, joaktiv si
-   parazgjedhje): 1.31–1.57× për MSM-në, −10.6% për hapin IVC 2^16, −8% për
+   është ndërtuar (`llull-folder::msm`, feature `batch-affine-msm`, aktiv si
+   parazgjedhje në `zeno-ivc`, `decider-zk`, `evm-verifier` dhe `sdk-bindings`,
+   pra edhe në WASM, celular dhe `cloud-prover`): 1.31–1.57× për MSM-në, −10.6% për hapin IVC 2^16, −8% për
    provuesin e `finalizeRecursive`, +11 MiB memorie në hap. Përdoret vetëm te
    provuesi; kontrollet e angazhimeve mbeten me arkworks
    (`commit_reference`). SIMD (AVX-512 / NEON) nuk është bërë: kërkon `unsafe`

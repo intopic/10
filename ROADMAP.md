@@ -39,7 +39,8 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 - [ ] KPI i kohës: MSM me bazë fikse dhe tabela të parallogaritura, cache i `AZ, BZ, CZ`,
       sintezë pa mbingarkesën e `ark-relations`
 - [x] **MSM me mbledhje afine të grupuara për provuesin** (`llull-folder::msm`, feature
-      `batch-affine-msm`, joaktiv si parazgjedhje):
+      `batch-affine-msm`, **aktiv si parazgjedhje** në `zeno-ivc`, `decider-zk`, `evm-verifier` dhe
+      `sdk-bindings`, pra edhe në WASM, celular dhe `cloud-prover`; fiket me `--no-default-features`):
   - Pippenger me shifra me shenjë; pikat e çdo dritareje renditen sipas kovës dhe çdo kovë mblidhet si
     pemë binare në koordinata afine, me një inversion për çdo raund (truku i Montgomery-t), në copa
     që qëndrojnë në cache L2; Rust i sigurt, pa `unsafe`
@@ -48,7 +49,7 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
     `hyrax_check`) përdor `commit_reference`, pra arkworks, me ose pa feature
   - teste kundrejt arkworks në katër kurba: skalarë të rastësishëm, të vegjël, negativë, zero; baza të
     përsëritura (dyfishime), të kundërta (anulime), identiteti, gjatësi të ndryshme; CI ekzekuton
-    testet e provuesit edhe me feature-in aktiv
+    testet e provuesit edhe me MSM-në e arkworks (feature-i i fikur)
   - matur në 4 vCPU: MSM-ja **1.31–1.57×** (77k Pallas 170 → 108 ms; 2^20 BN254 2.12 → 1.41 s); hapi
     IVC 2^16 Pasta **440 → 394 ms** (−10.6%), 2^12 BN254 165 → 149 ms; provuesi i `finalizeRecursive`
     39.3 → 36.0 s; memoria +11 MiB në hapin IVC (237 MiB), e njëjtë në vendimtar (2.29 GB)

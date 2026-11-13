@@ -28,7 +28,7 @@ sha3.workspace = true
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
 
 [features]
-default = ["parallel", "cli"]
+default = ["parallel", "cli", "batch-affine-msm"]
 # The prover's commitments with batched affine additions (llull-folder::msm).
 batch-affine-msm = ["llull-folder/batch-affine-msm"]
 parallel = [

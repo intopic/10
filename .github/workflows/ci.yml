@@ -35,8 +35,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo test --workspace --no-default-features --features llull-folder/cli,zeno-ivc/cli,decider-zk/cli,evm-verifier/cli
-      - name: The prover with batched affine MSM (llull-folder::msm)
-        run: cargo test --release -p llull-folder -p zeno-ivc -p decider-zk -p evm-verifier --features llull-folder/batch-affine-msm
+      # batch-affine-msm is on by default (and reaches the workspace builds above
+      # through sdk-bindings); this checks the prover crates with the arkworks MSM.
+      - name: The prover with the arkworks MSM (batch-affine-msm off)
+        run: cargo test --release -p llull-folder -p zeno-ivc -p decider-zk -p evm-verifier --no-default-features --features llull-folder/cli,zeno-ivc/cli,decider-zk/cli,evm-verifier/cli,llull-folder/parallel,zeno-ivc/parallel,decider-zk/parallel,evm-verifier/parallel
 
   wasm:
     name: wasm32 build
