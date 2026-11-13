@@ -192,9 +192,20 @@ impl EvmParams {
         label: &[u8],
         srs: &kzg::Srs,
     ) -> (Self, universal::CircuitKey) {
-        let len = universal::Dims::of(&shape).srs_len();
-        let ck = srs.commitment_key(label, len);
-        let key = universal::CircuitKey::preprocess(&shape, &ck);
+        let dims = universal::Dims::of(&shape);
+        Self::setup_universal_with_dims(shape, label, srs, dims)
+    }
+
+    /// [`Self::setup_universal`] with dimensions at least the circuit's own,
+    /// shared by circuits decided together by [`universal::batch`].
+    pub fn setup_universal_with_dims(
+        shape: R1CSShape<Fr>,
+        label: &[u8],
+        srs: &kzg::Srs,
+        dims: universal::Dims,
+    ) -> (Self, universal::CircuitKey) {
+        let ck = srs.commitment_key(label, dims.srs_len());
+        let key = universal::CircuitKey::preprocess_with_dims(&shape, &ck, dims);
         let vk = key.circuit_id(&ck.h, &srs.tau_g2);
         let params = Self {
             shape,

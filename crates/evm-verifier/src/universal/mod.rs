@@ -5,6 +5,7 @@
 //! reduces the relaxed R1CS relation to multilinear evaluations of committed
 //! polynomials, which are opened with [`hyperkzg`].
 
+pub mod batch;
 pub mod decider;
 pub mod hyperkzg;
 pub mod transcript;

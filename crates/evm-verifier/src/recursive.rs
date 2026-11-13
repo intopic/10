@@ -21,14 +21,20 @@
 //!    input the verifier assembles itself; it also recomputes the state hash
 //!    `h = H(vk, i, z_0, z_i, U, U_cf) = u.x`. Its instance is decided by the
 //!    universal decider for the closing circuit.
-//! 4. Both universal proofs end in a pairing equation over the same reference
-//!    string; they are combined with a transcript challenge into one pairing
-//!    check.
+//! 4. The masked primary accumulator and the closing instance are decided by
+//!    one batched universal proof ([`universal::batch`]): both circuit keys
+//!    share the same dimensions, so one set of sum-checks and one joint
+//!    opening cover both, with one pairing check.
 
 use crate::{
     kzg::Srs,
     point_words, relaxed_words,
-    universal::{self, transcript::KeccakTranscript, CircuitKey, UniversalProof},
+    universal::{
+        self,
+        batch::{self, BatchProof, Item},
+        transcript::KeccakTranscript,
+        CircuitKey, Dims,
+    },
     word, DeciderError, EvmParams, Word,
 };
 use alloc::{collections::BTreeMap, vec::Vec};
@@ -209,12 +215,6 @@ impl RecursiveParams {
         let ivc = CycleFoldParams::setup_with_key(step, label, CF_COLUMNS, |len| {
             srs.commitment_key(&primary_label, len)
         })?;
-        let (primary, primary_key) =
-            EvmParams::setup_universal(ivc.shape.clone(), &primary_label, srs);
-        // The IVC commits with a prefix of the decider's key.
-        assert_eq!(primary.ck.h, ivc.ck.h);
-        assert_eq!(primary.ck.gens[..ivc.ck.len()], ivc.ck.gens[..]);
-
         let closing_shape = {
             let (rows_w, rows_e) = ivc.cf_rows();
             let placeholder = ClosingCircuit::<Bn254Config, GrumpkinConfig> {
@@ -236,8 +236,25 @@ impl RecursiveParams {
             placeholder.synthesize(cs.clone())?;
             shape_from_cs(&cs)?
         };
-        let (closing, closing_key) =
-            EvmParams::setup_universal(closing_shape, &[label, b"/closing"].concat(), srs);
+        // Both circuits are decided by one batched argument, so their keys
+        // share the larger dimensions of the two.
+        let (dp, dc) = (Dims::of(&ivc.shape), Dims::of(&closing_shape));
+        let dims = Dims {
+            log_m: dp.log_m.max(dc.log_m),
+            log_n: dp.log_n.max(dc.log_n),
+            log_k: dp.log_k.max(dc.log_k),
+        };
+        let (primary, primary_key) =
+            EvmParams::setup_universal_with_dims(ivc.shape.clone(), &primary_label, srs, dims);
+        // The IVC commits with a prefix of the decider's key.
+        assert_eq!(primary.ck.h, ivc.ck.h);
+        assert_eq!(primary.ck.gens[..ivc.ck.len()], ivc.ck.gens[..]);
+        let (closing, closing_key) = EvmParams::setup_universal_with_dims(
+            closing_shape,
+            &[label, b"/closing"].concat(),
+            srs,
+            dims,
+        );
         let (cf_code, cf_code_hash) = cf_data_code(&ivc.cf_shape);
         Ok(Self {
             ivc,
@@ -289,8 +306,9 @@ pub struct RecursiveProof {
     pub cf_acc: CfRelaxedInstance<Grumpkin>,
     pub cf: CfProof,
     pub closing_comm_w: G1,
-    pub primary_proof: UniversalProof,
-    pub closing_proof: UniversalProof,
+    /// One batched universal proof for the masked primary accumulator and
+    /// the closing instance.
+    pub decider: BatchProof,
 }
 
 fn grumpkin_words(out: &mut Vec<Word>, p: &Grumpkin) {
@@ -575,10 +593,23 @@ pub fn prove(
         r_w,
     };
     let inst = closing_instance(closing_comm_w, x);
-    let closing_proof = universal::prove(&params.closing, &params.closing_key, &inst, &closing_wit);
 
-    // 4. The masked primary accumulator.
-    let primary_proof = universal::prove(&params.primary, &params.primary_key, &acc2, &wit2);
+    // 4. The masked primary accumulator and the closing instance, together.
+    let decider = batch::prove(
+        &[
+            Item {
+                params: &params.primary,
+                key: &params.primary_key,
+                acc: &acc2,
+            },
+            Item {
+                params: &params.closing,
+                key: &params.closing_key,
+                acc: &inst,
+            },
+        ],
+        &[&wit2, &closing_wit],
+    );
 
     let proof = RecursiveProof {
         i: ivc.i,
@@ -592,8 +623,7 @@ pub fn prove(
         cf_acc: ivc.cf.0.clone(),
         cf,
         closing_comm_w,
-        primary_proof,
-        closing_proof,
+        decider,
     };
     if !verify(params, &proof) {
         return Err(DeciderError::Unsatisfied);
@@ -688,26 +718,23 @@ pub fn verify(params: &RecursiveParams, p: &RecursiveProof) -> bool {
         closing_inputs(p.statement(), &weights, &combined),
     );
 
-    // 3–4. Both universal proofs, one pairing check.
-    let Some((l1, r1)) = universal::verify_deferred(
-        &params.primary,
-        &params.primary_key,
-        &acc2,
-        &p.primary_proof,
-    ) else {
+    // 3–4. One batched universal proof for both, one pairing check.
+    let items = [
+        Item {
+            params: &params.primary,
+            key: &params.primary_key,
+            acc: &acc2,
+        },
+        Item {
+            params: &params.closing,
+            key: &params.closing_key,
+            acc: &inst,
+        },
+    ];
+    let Some((left, right)) = batch::verify_deferred(&items, &p.decider) else {
         return false;
     };
-    let Some((l2, r2)) = universal::verify_deferred(
-        &params.closing,
-        &params.closing_key,
-        &inst,
-        &p.closing_proof,
-    ) else {
-        return false;
-    };
-    tr.absorb_points(&[l1, r1, l2, r2]);
-    let mix = tr.challenge();
-    universal::hyperkzg::pairing_check(l1 + l2 * mix, r1 + r2 * mix, tau_g2)
+    universal::hyperkzg::pairing_check(left, right, tau_g2)
 }
 
 /// `state` of `finalizeRecursive`: `[i, k, z₀, zᵢ, U(6), u(3), comm_T(2),
@@ -739,8 +766,8 @@ pub fn cf_proof_words(p: &RecursiveProof) -> Vec<Word> {
     out
 }
 
-/// The six word arrays of `finalizeRecursive`, in argument order.
-pub fn arguments(params: &RecursiveParams, p: &RecursiveProof) -> [Vec<Word>; 6] {
+/// The five word arrays of `finalizeRecursive`, in argument order.
+pub fn arguments(params: &RecursiveParams, p: &RecursiveProof) -> [Vec<Word>; 5] {
     let key = |ev: &EvmParams, k: &CircuitKey| {
         k.contract_words(&ev.ck.h, &ev.tau_g2.expect("KZG parameters"))
     };
@@ -749,16 +776,15 @@ pub fn arguments(params: &RecursiveParams, p: &RecursiveProof) -> [Vec<Word>; 6]
         key(&params.closing, &params.closing_key),
         state_words(p),
         cf_proof_words(p),
-        p.primary_proof.words(),
-        p.closing_proof.words(),
+        p.decider.words(),
     ]
 }
 
-/// ABI-encoded `finalizeRecursive(uint256[] ×6)` and, for every argument,
+/// ABI-encoded `finalizeRecursive(uint256[] ×5)` and, for every argument,
 /// the byte offset of its first word in the calldata.
-pub fn calldata(params: &RecursiveParams, p: &RecursiveProof) -> (Vec<u8>, [usize; 6]) {
+pub fn calldata(params: &RecursiveParams, p: &RecursiveProof) -> (Vec<u8>, [usize; 5]) {
     let args = arguments(params, p);
-    let sig = "finalizeRecursive(uint256[],uint256[],uint256[],uint256[],uint256[],uint256[])";
+    let sig = "finalizeRecursive(uint256[],uint256[],uint256[],uint256[],uint256[])";
     let hash = Keccak256::digest(sig.as_bytes());
     let mut out = hash[..4].to_vec();
     let uint = |v: usize| -> Word {
@@ -771,7 +797,7 @@ pub fn calldata(params: &RecursiveParams, p: &RecursiveProof) -> (Vec<u8>, [usiz
         out.extend(uint(offset));
         offset += 32 * (1 + a.len());
     }
-    let mut starts = [0usize; 6];
+    let mut starts = [0usize; 5];
     for (i, a) in args.iter().enumerate() {
         out.extend(uint(a.len()));
         starts[i] = out.len();

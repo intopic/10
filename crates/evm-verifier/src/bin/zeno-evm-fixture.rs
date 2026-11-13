@@ -245,6 +245,6 @@ fn recursive(steps: usize, rounds: usize, ptau: Option<&str>, rng: &mut StdRng) 
         lens.join(","),
         params.primary.shape.num_constraints,
         params.closing.shape.num_constraints,
-        32 * (args[3].len() + args[4].len() + args[5].len()),
+        32 * (args[3].len() + args[4].len()),
     );
 }

@@ -106,7 +106,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **6.17 M gas** për çdo N.
+- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **4.69 M gas** për çdo N (6.17 M para bashkimit të provave).
       Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
       kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
       ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
@@ -209,9 +209,24 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       publike në vendimtarin universal me tabelë `eq` vetëm mbi variablat e ulët (`2^b + |x|` në
       vend të `|x|·log n`). Ngjeshja e 350 hyrjeve publike në një hash nuk ia vlen: ato i llogarit
       kontrata vetë (nuk janë calldata), dhe një hash Poseidon i tyre në EVM do të kushtonte më shumë
-  - [ ] Ulje e mëtejshme: vlerësimi i matricave CycleFold me strukturën uniforme të qarkut (127
-        iteracione identike) në vend të 4 380 elementeve; qarku mbyllës nën 2^19 elemente jo-zero;
-        bashkimi i dy provave universale në një argument të vetëm
+  - [x] **Optimizimi 3 — një provë universale për të dy qarqet** (`evm-verifier::universal::batch`,
+        `contracts/ZenoBatchedDecider.sol`): çelësat e qarkut primar dhe të qarkut mbyllës përgatiten me
+        të njëjtat dimensione (`CircuitKey::preprocess_with_dims`), kështu që çdo sum-check kryhet një
+        herë për të dy (pretendimet të kombinuara me fuqi të një sfide), tabelat `eq(r_x, ·)` dhe
+        `eq(r_y, ·)` ndahen, dhe pesë hapje HyperKZG mbulojnë polinomet e të dy qarqeve. Rust dhe Solidity
+        për çdo numër instancash; teste me dy qarqe të ndryshëm, me një instancë, me radhë të ndërruar,
+        me çelës të huaj dhe 19 falsifikime
+    - prova për dy qarqe është vetëm ~11% më e madhe se për një (11.5 KB kundrejt 10.4 KB në testin me
+      qarqe të vegjël)
+    - `finalizeRecursive`: **4 693 653 gas** = 4.06 M ekzekutim + 39 KB calldata (nga 6.17 M dhe 61 KB);
+      vendimtari i grupuar kushton 2.22 M në vend të 1.38 M + 2.01 M; 31 falsifikime me një fjalë në
+      calldata, të gjitha të refuzuara; provuesi rreth 46 s (qarku primar mbushet deri në 2^20)
+  - [ ] Optimizimi 1 — vlerësimi i matricave CycleFold nga struktura uniforme e qarkut (127 iteracione
+        identike) në vend të 4 380 elementeve (~0.65 M gas + tabelat `eq` me 1024 elemente); pa
+        kontratën e të dhënave
+  - [ ] Optimizimi 2 — qarku mbyllës nën 2^19 elemente jo-zero. MSM-ja me bazë fikse (dritare 2-bitëshe
+        me tabela konstante, tashmë) mban 456k nga 782k; rruga: qarku CycleFold ≤ 512 kufizime (sfida në
+        formë endomorfizmi) që lejon C = 64 me po 8 + 8 rreshta
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 

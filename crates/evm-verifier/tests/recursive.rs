@@ -91,12 +91,20 @@ fn recursive_ivc_is_decided_and_forgeries_are_rejected() {
             Box::new(|p| p.closing_comm_w += G1::generator()),
         ),
         (
-            "primary proof",
-            Box::new(|p| p.primary_proof.claims[0] += Fr::one()),
+            "primary claims",
+            Box::new(|p| p.decider.claims[0][0] += Fr::one()),
         ),
         (
-            "closing proof",
-            Box::new(|p| p.closing_proof.v_w += Fr::one()),
+            "closing W(r_y)",
+            Box::new(|p| p.decider.v[1][1] += Fr::one()),
+        ),
+        (
+            "matrix evaluations",
+            Box::new(|p| p.decider.evals_k[1][4] += Fr::one()),
+        ),
+        (
+            "opening",
+            Box::new(|p| p.decider.openings.pi[0] += G1::generator()),
         ),
     ];
     for (name, forge) in &forged {

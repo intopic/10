@@ -23,7 +23,7 @@ function compile() {
   const input = {
     language: "Solidity",
     sources: {
-      "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
+      "ZenoBatchedDecider.sol": read("ZenoBatchedDecider.sol"),
       "ZenoRecursiveVerifier.sol": read("ZenoRecursiveVerifier.sol"),
     },
     settings: {
@@ -39,7 +39,7 @@ function compile() {
   const warnings = (out.errors ?? []).filter((e) => e.severity === "warning");
   assert.equal(warnings.length, 0, warnings.map((e) => e.formattedMessage).join("\n"));
   return {
-    decider: out.contracts["ZenoUniversalDecider.sol"].ZenoUniversalDecider,
+    decider: out.contracts["ZenoBatchedDecider.sol"].ZenoBatchedDecider,
     recursive: out.contracts["ZenoRecursiveVerifier.sol"].ZenoRecursiveVerifier,
   };
 }
@@ -62,7 +62,7 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     return { address: res.createdAddress, gas: res.execResult.executionGasUsed };
   };
 
-  console.log("generating the recursive proof (CycleFold IVC + two universal proofs) …");
+  console.log("generating the recursive proof (CycleFold IVC + one batched universal proof) …");
   const args = ["--mode", "recursive", "--steps", String(STEPS)];
   if (process.env.ZENO_PTAU) args.push("--ptau", process.env.ZENO_PTAU);
   const t0 = Date.now();
@@ -75,12 +75,12 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   assert.ok(codeLen <= 24576, "CycleFold data exceeds the contract size limit");
   const dataInit = "0x61" + codeLen.toString(16).padStart(4, "0") + "80600a3d393df3" + code;
   const data = await create(dataInit, "CycleFold data");
-  const decider = await create("0x" + compiled.decider.evm.bytecode.object, "universal decider");
+  const decider = await create("0x" + compiled.decider.evm.bytecode.object, "batched decider");
   const verifierInit =
     "0x" + compiled.recursive.evm.bytecode.object +
     word(BigInt(decider.address.toString())) + word(BigInt(data.address.toString()));
   const verifier = await create(verifierInit, "recursive verifier");
-  console.log(`deployment           : ${verifier.gas} gas (verifier), ${data.gas} gas (CycleFold data, ${codeLen} bytes)`);
+  console.log(`deployment           : ${verifier.gas} gas (verifier), ${decider.gas} gas (batched decider), ${data.gas} gas (CycleFold data, ${codeLen} bytes)`);
 
   const call = async (dataHex) => {
     const bytes = hexToBytes(dataHex);
@@ -101,14 +101,17 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   assert.equal(BigInt(decided.ret), 1n, "the claim is recorded as decided");
   const calldataBytes = (fx.calldata.length - 2) / 2;
   console.log(`finalizeRecursive    : ${res.gas} gas (${res.exec} execution, ${calldataBytes} bytes of calldata), ${fx.steps} IVC steps`);
-  console.log(`proof                : ${fx.proofBytes} bytes; primary circuit ${fx.primaryConstraints} constraints, closing circuit ${fx.closingConstraints}`);
+  console.log(`proof                : ${fx.proofBytes} bytes (CycleFold argument + one batched decider proof); primary circuit ${fx.primaryConstraints} constraints, closing circuit ${fx.closingConstraints}`);
 
   // ---- Forgeries: one word in every part of the calldata --------------------
-  const names = ["primary key", "closing key", "state", "CycleFold proof", "primary proof", "closing proof"];
+  const names = ["primary key", "closing key", "state", "CycleFold proof", "decider proof"];
   let forged = 0;
-  for (let a = 0; a < 6; ++a) {
+  for (let a = 0; a < names.length; ++a) {
     const len = fx.lengths[a];
-    const picks = a === 2 ? [0, 2, 3, 6, 9, 12, 15, 18, 21, len - 9, len - 1] : [0, Math.floor(len / 2), len - 1];
+    const picks =
+      a === 2 ? [0, 2, 3, 6, 9, 12, 15, 18, 21, len - 9, len - 1]
+      : a === 4 ? [0, 3, 40, 100, 200, 300, 400, Math.floor(len / 2), len - 200, len - 7, len - 1]
+      : [0, Math.floor(len / 2), len - 1];
     for (const w of picks) {
       const at = 2 + 2 * (fx.starts[a] + 32 * w);
       const original = fx.calldata.slice(at, at + 64);

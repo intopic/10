@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-/// The universal decider's verifier, without its final pairing check.
-interface IZenoUniversalDeciderDeferred {
+/// The batched universal decider, without its final pairing check.
+interface IZenoBatchedDecider {
     function verifyDeferred(
-        bytes32 vk,
-        uint256[] calldata key,
-        uint256[] calldata acc,
+        bytes32[] calldata vks,
+        uint256[][] calldata keys,
+        uint256[][] calldata accs,
         uint256[] calldata proof
     ) external view returns (uint256[4] memory lr);
 }
@@ -27,8 +27,8 @@ interface IZenoUniversalDeciderDeferred {
 ///    `w'`, whose inner products it checks;
 /// 3. assembles the public input of the closing circuit, which proves the
 ///    remaining Grumpkin equation and recomputes `u.x = H(vk, i, z₀, zᵢ, U, U_cf)`;
-/// 4. verifies both universal decider proofs and checks their two pairing
-///    equations with one pairing (random linear combination).
+/// 4. verifies one batched universal decider proof for the masked primary
+///    accumulator and the closing instance, and checks its pairing equation.
 contract ZenoRecursiveVerifier {
     /// Order of the BN254 scalar field.
     uint256 internal constant R =
@@ -59,7 +59,7 @@ contract ZenoRecursiveVerifier {
 
     bytes32 internal constant DOMAIN = keccak256("zeno-llull/recursive-decider/v1");
 
-    IZenoUniversalDeciderDeferred public immutable decider;
+    IZenoBatchedDecider public immutable decider;
     /// Data contract holding the CycleFold matrices (`0x00 ‖ data`).
     address public immutable cfData;
     bytes32 public immutable cfCodeHash;
@@ -101,7 +101,7 @@ contract ZenoRecursiveVerifier {
         uint256 gamma;
     }
 
-    constructor(IZenoUniversalDeciderDeferred decider_, address cfData_) {
+    constructor(IZenoBatchedDecider decider_, address cfData_) {
         decider = decider_;
         cfData = cfData_;
         bytes32 h;
@@ -118,13 +118,13 @@ contract ZenoRecursiveVerifier {
     /// mask_T(2), U_cf rows of W, rows of E (2 words each), U_cf.u, U_cf.x]`.
     /// @param cfProof `[outer sum-check, claims(4), inner sum-check, W(r_y'),
     /// e'(128), w'(128), closing comm_W(2)]`.
+    /// @param deciderProof the batched universal proof for both circuits.
     function finalizeRecursive(
         uint256[] calldata primaryKey,
         uint256[] calldata closingKey,
         uint256[] calldata state,
         uint256[] calldata cfProof,
-        uint256[] calldata primaryProof,
-        uint256[] calldata closingProof
+        uint256[] calldata deciderProof
     ) external returns (bytes32 systemId) {
         if (primaryKey.length != 23 || closingKey.length != 23) revert MalformedInput();
         // Both universal proofs must be over the same [τ]₂.
@@ -178,15 +178,16 @@ contract ZenoRecursiveVerifier {
         // ---- 3. The closing instance --------------------------------------------
         uint256[] memory closing = _closingInstance(d, l, state, cfProof, cf);
 
-        // ---- 4. Both universal proofs, one pairing ------------------------------
-        uint256[4] memory a = decider.verifyDeferred(vkP, primaryKey, acc, primaryProof);
-        uint256[4] memory b = decider.verifyDeferred(vkC, closingKey, closing, closingProof);
-        tr = _absorb(tr, abi.encodePacked(a, b));
-        uint256 mix;
-        (tr, mix) = _challenge(tr, R);
-        (a[0], a[1]) = _addMul(a[0], a[1], b[0], b[1], mix);
-        (a[2], a[3]) = _addMul(a[2], a[3], b[2], b[3], mix);
-        _pairing(a, primaryKey);
+        // ---- 4. One batched universal proof for both circuits, one pairing ------
+        {
+            bytes32[] memory vks = new bytes32[](2);
+            (vks[0], vks[1]) = (vkP, vkC);
+            uint256[][] memory keys = new uint256[][](2);
+            (keys[0], keys[1]) = (primaryKey, closingKey);
+            uint256[][] memory accs = new uint256[][](2);
+            (accs[0], accs[1]) = (acc, closing);
+            _pairing(decider.verifyDeferred(vks, keys, accs, deciderProof), primaryKey);
+        }
 
         bytes32 claimHash = keccak256(abi.encodePacked(state[0], state[2:2 + 2 * d.arity]));
         decided[keccak256(abi.encodePacked(systemId, claimHash))] = true;

@@ -62,16 +62,16 @@ impl Dims {
             log_k: log2_ceil(entries.max(4)),
         }
     }
-    fn m(&self) -> usize {
+    pub fn m(&self) -> usize {
         1 << self.log_m
     }
-    fn n(&self) -> usize {
+    pub fn n(&self) -> usize {
         1 << self.log_n
     }
-    fn z(&self) -> usize {
+    pub fn z(&self) -> usize {
         2 << self.log_n
     }
-    fn k(&self) -> usize {
+    pub fn k(&self) -> usize {
         1 << self.log_k
     }
     /// Length of the reference string the argument needs.
@@ -95,14 +95,14 @@ fn remap(shape: &R1CSShape<Fr>, n: usize, col: usize) -> usize {
 #[derive(Clone, Debug)]
 pub struct CircuitKey {
     pub dims: Dims,
-    row_idx: Vec<usize>,
-    col_idx: Vec<usize>,
-    row: Vec<Fr>,
-    col: Vec<Fr>,
+    pub(crate) row_idx: Vec<usize>,
+    pub(crate) col_idx: Vec<usize>,
+    pub(crate) row: Vec<Fr>,
+    pub(crate) col: Vec<Fr>,
     /// `val_A`, `val_B`, `val_C`: each zero outside its matrix' entries.
-    val: [Vec<Fr>; 3],
-    count_row: Vec<Fr>,
-    count_col: Vec<Fr>,
+    pub(crate) val: [Vec<Fr>; 3],
+    pub(crate) count_row: Vec<Fr>,
+    pub(crate) count_col: Vec<Fr>,
     /// Commitments to `row, col, val_A, val_B, val_C, count_row, count_col`.
     pub comms: [G1; 7],
 }
@@ -111,7 +111,17 @@ impl CircuitKey {
     /// Commits to the circuit's matrices. Deterministic and public: it uses
     /// only the circuit and the reference string, no secret randomness.
     pub fn preprocess(shape: &R1CSShape<Fr>, ck: &CommitmentKey<G1>) -> Self {
-        let dims = Dims::of(shape);
+        Self::preprocess_with_dims(shape, ck, Dims::of(shape))
+    }
+
+    /// [`Self::preprocess`] with larger dimensions than the circuit needs, so
+    /// that several circuits share them (see [`super::batch`]).
+    pub fn preprocess_with_dims(shape: &R1CSShape<Fr>, ck: &CommitmentKey<G1>, dims: Dims) -> Self {
+        let own = Dims::of(shape);
+        assert!(
+            dims.log_m >= own.log_m && dims.log_n >= own.log_n && dims.log_k >= own.log_k,
+            "dimensions smaller than the circuit"
+        );
         assert!(
             ck.len() >= dims.srs_len(),
             "reference string too short: the universal decider needs {} powers",
@@ -304,26 +314,26 @@ fn start(
     tr
 }
 
-fn padded(v: &[Fr], len: usize) -> Vec<Fr> {
+pub(crate) fn padded(v: &[Fr], len: usize) -> Vec<Fr> {
     let mut out = v.to_vec();
     out.resize(len, Fr::zero());
     out
 }
 
 /// The multilinear extension of the table `j ↦ j`, at `point`.
-fn index_mle(point: &[Fr]) -> Fr {
+pub(crate) fn index_mle(point: &[Fr]) -> Fr {
     point.iter().fold(Fr::zero(), |acc, p| acc + acc + p)
 }
 
 /// Summands of the three lookup/product sum-checks; shared by the prover
 /// (on tables) and the verifier (on the evaluations at the final point).
-struct Challenges {
-    beta: Fr,
-    gamma: Fr,
+pub(crate) struct Challenges {
+    pub(crate) beta: Fr,
+    pub(crate) gamma: Fr,
 }
 
 /// `[val_ρ, e_row, e_col, h1_row, h1_col, eq_τ, row, col]`.
-fn summand_k(v: &[Fr], ch: &Challenges, delta: Fr) -> Fr {
+pub(crate) fn summand_k(v: &[Fr], ch: &Challenges, delta: Fr) -> Fr {
     let d2 = delta * delta;
     v[0] * v[1] * v[2]
         + delta * v[3]
@@ -333,11 +343,11 @@ fn summand_k(v: &[Fr], ch: &Challenges, delta: Fr) -> Fr {
 }
 
 /// `[h2, eq_τ, index, table, count]`.
-fn summand_table(v: &[Fr], ch: &Challenges, delta: Fr) -> Fr {
+pub(crate) fn summand_table(v: &[Fr], ch: &Challenges, delta: Fr) -> Fr {
     v[0] + delta * v[1] * (v[0] * (ch.gamma + v[2] + ch.beta * v[3]) - v[4])
 }
 
-fn inverses(mut denominators: Vec<Fr>) -> Vec<Fr> {
+pub(crate) fn inverses(mut denominators: Vec<Fr>) -> Vec<Fr> {
     batch_inversion(&mut denominators);
     denominators
 }
