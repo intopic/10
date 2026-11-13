@@ -106,7 +106,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold).
+- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata) për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold).
       Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
       kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
       ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
@@ -240,9 +240,17 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
     - `finalizeRecursive`: **3 566 872 gas** = 2.93 M ekzekutim + 39 KB calldata (nga 4.69 M); vetë
       verifikuesi para vendimtarit të grupuar 0.57 M (nga ~1.69 M), vendimtari 2.22 M, `ecPairing` 0.12 M;
       kontrata 13.8 KB; 31 falsifikime, të gjitha të refuzuara; provuesi rreth 39 s
-  - [ ] Optimizimi 2 — qarku mbyllës nën 2^19 elemente jo-zero. MSM-ja me bazë fikse (dritare 2-bitëshe
-        me tabela konstante, tashmë) mban 456k nga 782k; rruga: qarku CycleFold ≤ 512 kufizime (sfida në
-        formë endomorfizmi) që lejon C = 64 me po 8 + 8 rreshta
+  - [x] **Optimizimi 2 — i vendosur: mbetet `.ptau 2^20`** (vendim i pronarit). Qarku mbyllës nuk zbret
+        dot nën 2^19 (524 288) elemente jo-zero brenda qarkut; matur pjesë për pjesë:
+    - MSM-ja me bazë fikse (128 baza × 254 bit, dritare 2-bitëshe me tabela konstante): 4 237 elemente
+      për bazë (16.7 për bit, me booleanitetin), **~555k** gjithsej; 16 shumëzimet me bazë të
+      ndryshueshme ~138k (8 644 secila); Poseidon-i i gjendjes ~53k
+    - dritaret 3-bitëshe (stil `lookup3_xy`, prototip i matur) japin 3 968 për bazë (−6%); dritaret më
+      të mëdha dalin më keq në R1CS (kërkimi kërkon prodhime bitësh). Vetëm MSM-ja mbetet ≥ 508k
+    - më pak kolona Hyrax (C = 64) ulin MSM-në por dyfishojnë rreshtat, dhe atëherë qarku primar kalon
+      vetë mbi 2^19; një qark CycleFold ≤ 512 kufizime nuk arrihet me sfida 128-bitëshe (127 × 7 variabla)
+    - rruga e mbetur — ndarja e çelësit të matricave në vendimtar në pjesë ≤ 2^19 — nuk ia vlen: fitimi
+      në gaz do të ishte ~0.07 M, ndërsa 1.94 GB RAM dhe `.ptau 2^20` në cache mjaftojnë për prodhim
 
 ## Faza 4 — Paketa SDK për treg `sdk-bindings` 🚧
 

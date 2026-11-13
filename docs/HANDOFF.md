@@ -154,10 +154,13 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 
 ## 8. Çfarë nuk është bërë
 
-1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 3.57 M, nga të
-   cilat vendimtari i grupuar 2.22 M): qarku mbyllës nën 2^19 elemente
-   jo-zero (kryesisht RAM dhe kohë e provuesit). Dy provat universale janë
-   bashkuar në një dhe matricat CycleFold vlerësohen nga struktura uniforme.
+1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 3.57 M: 2.93 M
+   ekzekutim + 39 KB calldata, nga të cilat vendimtari i grupuar 2.22 M). Dy
+   provat universale janë bashkuar në një dhe matricat CycleFold vlerësohen
+   nga struktura uniforme. Qarku mbyllës mbetet mbi 2^19 elemente jo-zero
+   (782k, nga të cilat ~555k MSM-ja me bazë fikse, tashmë në kufirin e R1CS-së
+   për bit), prandaj sistemi kërkon `.ptau 2^20`: vendim i marrë (ROADMAP,
+   Optimizimi 2).
 2. **Ulje e mëtejshme e gazit të `finalizeUniversal`**: reduktimi i pesë
    pretendimeve të vlerësimit në më pak pika.
 3. **Publikimi**: paketa NPM, imazhi Docker, AAR dhe XCFramework ndërtohen në
@@ -170,8 +173,10 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 
 ## 9. Vendime të hapura për pronarin
 
-1. **Finalizimi EVM i IVC-së rekursive** është ndërtuar (mënyra D). Mbetet
-   vendimi nëse ia vlen investimi në uljen e mëtejshme të gazit (pika 8.1).
+1. **Finalizimi EVM i IVC-së rekursive** është ndërtuar (mënyra D), me të tre
+   optimizimet e vendosura (3.57 M gas, `.ptau 2^20`). Mbetet vendimi nëse ia
+   vlen investimi në uljen e mëtejshme të gazit të vendimtarit universal
+   (pika 8.2).
 2. **Mënyra Groth16 (`finalizeWithProof`)**: të hiqet nga kontrata, apo të
    mbetet si mënyrë zhvillimi? Sot është e shënuar "vetëm për zhvillim" dhe
    regjistrimi i çelësave të saj bëhet nga pronari i kontratës.
