@@ -82,7 +82,7 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | Çfarë | Vlera |
 |---|---|
 | Qarku rekursiv primar | 11 217 kufizime (54% hash-e Poseidon) |
-| Hap IVC, hap me 2^16 kufizime | rreth 307–415 ms; 946 → 553 → 307 ms për 1 / 2 / 4 fije |
+| Hap IVC, hap me 2^16 kufizime | rreth 307–440 ms; 946 → 553 → 307 ms për 1 / 2 / 4 fije; me `batch-affine-msm` 440 → 394 ms |
 | Memoria e provuesit | konstante në numrin e hapave; rreth 225 MiB (2^16), e kufizuar ≤ 512 MiB në CI |
 | `nifs_verify` | rreth 0.5 ms |
 | Prova transparente (mënyra A) | rreth 10 KB |
@@ -92,7 +92,7 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | `verifyFoldedProofBatch` | rreth 22.9k gas për hap (100 hapa = 2.29 M) |
 | `finalizeUniversal` | 0.82 M gas / 6.7 KB (16 kufizime) → 1.89 M gas / 21.6 KB (65 536 kufizime) |
 | `finalizeWithProof` (Groth16, zhvillim) | rreth 456k gas, 544 bajt |
-| Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 936 kufizime / 66 791 kufizime, 468k elemente jo-zero |
+| Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 943 kufizime (936 variabla) / 66 791 kufizime, 468k elemente jo-zero |
 | Qarku mbyllës | 136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike; 28 s provim, 1.94 GB memorie |
 | Provuesi i `finalizeRecursive` (pas hapave) | rreth 40 s; verifikim native 14 ms |
 | `finalizeRecursive` | **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata), i njëjtë për çdo numër hapash; një provë universale e grupuar për qarkun primar dhe atë mbyllës; matricat CycleFold nga struktura uniforme (230 rekorde) |
@@ -167,9 +167,13 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
    CI si artefakte, por nuk janë publikuar askund.
 4. **Hyrje nga Noir dhe ONNX (zkML)**; vetëm Circom mbështetet.
 5. **Avancimet opsionale të specifikimit**: CCS/HyperNova, SuperNova, SIMD.
-6. **Optimizimi i MSM-së** (koha e hapit). Tabelat me bazë fikse dhe GLV nuk
-   ndihmojnë për MSM të mëdha; përfitimi real do të vinte nga mbledhja
-   *batch-affine* (rreth 1.5×) ose nga më shumë bërthama.
+6. **Optimizimi i MSM-së** (koha e hapit). MSM-ja me mbledhje afine të grupuara
+   është ndërtuar (`llull-folder::msm`, feature `batch-affine-msm`, joaktiv si
+   parazgjedhje): 1.31–1.57× për MSM-në, −10.6% për hapin IVC 2^16, −8% për
+   provuesin e `finalizeRecursive`, +11 MiB memorie në hap. Përdoret vetëm te
+   provuesi; kontrollet e angazhimeve mbeten me arkworks
+   (`commit_reference`). SIMD (AVX-512 / NEON) nuk është bërë: kërkon `unsafe`
+   dhe fitimi varet nga procesori.
 
 ## 9. Vendime të hapura për pronarin
 

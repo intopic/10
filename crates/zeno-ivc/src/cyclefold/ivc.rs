@@ -411,7 +411,7 @@ where
 
         check_accumulator(&params.ck, &params.shape, &self.acc.0, &self.acc.1)?;
         params.shape.is_sat(&self.last.1.w, &self.last.0.x)?;
-        if params.ck.commit(&self.last.1.w, self.last.1.r_w) != self.last.0.comm_w {
+        if params.ck.commit_reference(&self.last.1.w, self.last.1.r_w) != self.last.0.comm_w {
             return Err(FoldError::WitnessCommitmentMismatch.into());
         }
         cf_check(&params.cf_key, &params.cf_shape, &self.cf.0, &self.cf.1)?;

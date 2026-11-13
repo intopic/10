@@ -35,6 +35,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo test --workspace --no-default-features --features llull-folder/cli,zeno-ivc/cli,decider-zk/cli,evm-verifier/cli
+      - name: The prover with batched affine MSM (llull-folder::msm)
+        run: cargo test --release -p llull-folder -p zeno-ivc -p decider-zk -p evm-verifier --features llull-folder/batch-affine-msm
 
   wasm:
     name: wasm32 build

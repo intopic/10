@@ -400,7 +400,12 @@ where
         check_accumulator(&params.pp1.ck, &params.shape1, &self.acc1.0, &self.acc1.1)?;
         check_accumulator(&params.pp2.ck, &params.shape2, &self.acc2.0, &self.acc2.1)?;
         params.shape2.is_sat(&self.last2.1.w, &self.last2.0.x)?;
-        if params.pp2.ck.commit(&self.last2.1.w, self.last2.1.r_w) != self.last2.0.comm_w {
+        if params
+            .pp2
+            .ck
+            .commit_reference(&self.last2.1.w, self.last2.1.r_w)
+            != self.last2.0.comm_w
+        {
             return Err(FoldError::WitnessCommitmentMismatch.into());
         }
         Ok(())

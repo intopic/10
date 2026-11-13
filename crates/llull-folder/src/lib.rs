@@ -10,6 +10,7 @@
 extern crate alloc;
 
 pub mod llull_combinator;
+pub mod msm;
 pub mod nifs_engine;
 pub mod pedersen;
 pub mod transcript;

@@ -38,6 +38,20 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
 - [x] CLI `zeno-ivc prove --steps N --log-constraints K --cycle pasta|bn254`
 - [ ] KPI i kohës: MSM me bazë fikse dhe tabela të parallogaritura, cache i `AZ, BZ, CZ`,
       sintezë pa mbingarkesën e `ark-relations`
+- [x] **MSM me mbledhje afine të grupuara për provuesin** (`llull-folder::msm`, feature
+      `batch-affine-msm`, joaktiv si parazgjedhje):
+  - Pippenger me shifra me shenjë; pikat e çdo dritareje renditen sipas kovës dhe çdo kovë mblidhet si
+    pemë binare në koordinata afine, me një inversion për çdo raund (truku i Montgomery-t), në copa
+    që qëndrojnë në cache L2; Rust i sigurt, pa `unsafe`
+  - vetëm te provuesi (`CommitmentKey::commit`, përmes trait-it `ProverMsm`); çdo kontroll i një
+    angazhimi kundrejt hapjes (`check_accumulator`, `verify` i akumulatorëve, `cf_check`,
+    `hyrax_check`) përdor `commit_reference`, pra arkworks, me ose pa feature
+  - teste kundrejt arkworks në katër kurba: skalarë të rastësishëm, të vegjël, negativë, zero; baza të
+    përsëritura (dyfishime), të kundërta (anulime), identiteti, gjatësi të ndryshme; CI ekzekuton
+    testet e provuesit edhe me feature-in aktiv
+  - matur në 4 vCPU: MSM-ja **1.31–1.57×** (77k Pallas 170 → 108 ms; 2^20 BN254 2.12 → 1.41 s); hapi
+    IVC 2^16 Pasta **440 → 394 ms** (−10.6%), 2^12 BN254 165 → 149 ms; provuesi i `finalizeRecursive`
+    39.3 → 36.0 s; memoria +11 MiB në hapin IVC (237 MiB), e njëjtë në vendimtar (2.29 GB)
 
 ## Faza 3 — Kompresuesi ZK dhe kontrata verifikuese (vendimtar me dy mënyra) ✅ / 🚧
 
@@ -292,7 +306,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Faza 1 — vetëm `nifs_prove`, 2^16 kufizime | ~148 ms / hap |
 | Faza 1 — `nifs_verify` | ~0.5 ms / hap |
 | Faza 2 — hap i plotë IVC, hap me 2^8 kufizime | ~135 ms |
-| Faza 2 — hap i plotë IVC, hap me 2^16 kufizime | ~415 ms |
+| Faza 2 — hap i plotë IVC, hap me 2^16 kufizime | ~415–440 ms; ~394 ms me `batch-affine-msm` |
 | Verifikimi IVC | ~125–370 ms, i pavarur nga numri i hapave |
 | RSS maksimale (2^16, e pavarur nga `t`) | ~225 MiB |
 | WASM (Node.js, 1 fije, qark Circom) | ~0.9–1.3 s / hap, ~161 MiB memorie |

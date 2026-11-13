@@ -1,6 +1,7 @@
 //! Additively homomorphic Pedersen vector commitments with a transparent
 //! setup (spec §2.2, eq. 2): `Com(v; r) = Σ v_i·G_i + r·H`.
 
+use crate::msm::ProverMsm;
 use alloc::vec::Vec;
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{One, Zero};
@@ -66,12 +67,22 @@ impl<C: CurveGroup> CommitmentKey<C> {
         self.gens.is_empty()
     }
 
-    /// `Com(v; r) = Σ v_i·G_i + r·H`. Panics if `v` is longer than the key.
-    ///
+    /// [`Self::commit`] with the arkworks multi-scalar multiplication, for
+    /// every check of a commitment against an opening (verifiers and
+    /// deciders), whatever the prover uses.
+    pub fn commit_reference(&self, v: &[C::ScalarField], r: C::ScalarField) -> C {
+        self.commit_with(v, r, |b, s| C::msm_unchecked(b, s))
+    }
+
     /// Circuit witnesses are dominated by zeros and ones (bit decompositions),
     /// so those are handled by plain point additions and only the remaining
     /// scalars go through the multi-scalar multiplication.
-    pub fn commit(&self, v: &[C::ScalarField], r: C::ScalarField) -> C {
+    fn commit_with(
+        &self,
+        v: &[C::ScalarField],
+        r: C::ScalarField,
+        msm: impl Fn(&[C::Affine], &[C::ScalarField]) -> C,
+    ) -> C {
         assert!(v.len() <= self.gens.len(), "commitment key too short");
         let mut ones = C::zero();
         let mut bases = Vec::new();
@@ -89,8 +100,16 @@ impl<C: CurveGroup> CommitmentKey<C> {
         let msm = if scalars.is_empty() {
             C::zero()
         } else {
-            C::msm_unchecked(&bases, &scalars)
+            msm(&bases, &scalars)
         };
         msm + ones + self.h * r
+    }
+}
+
+impl<C: ProverMsm> CommitmentKey<C> {
+    /// `Com(v; r) = Σ v_i·G_i + r·H`, as the prover computes it (see
+    /// [`ProverMsm`]). Panics if `v` is longer than the key.
+    pub fn commit(&self, v: &[C::ScalarField], r: C::ScalarField) -> C {
+        self.commit_with(v, r, |b, s| C::prover_msm(b, s))
     }
 }

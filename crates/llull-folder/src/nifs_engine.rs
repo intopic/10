@@ -1,6 +1,7 @@
 //! NIFS prove / verify (spec §2.4, eq. 6–7) with Zeno-style accumulation:
 //! an unbounded sequence of steps collapses into one constant-size `(U, W)`.
 
+use crate::msm::ProverMsm;
 use crate::{
     llull_combinator::compute_cross_term,
     pedersen::CommitmentKey,
@@ -93,7 +94,7 @@ where
 }
 
 /// Commits to the witness of a fresh step, producing a strict R1CS pair.
-pub fn commit_witness<C: CurveGroup>(
+pub fn commit_witness<C: ProverMsm>(
     ck: &CommitmentKey<C>,
     w: Vec<C::ScalarField>,
     x: Vec<C::ScalarField>,
@@ -108,7 +109,7 @@ pub fn commit_witness<C: CurveGroup>(
 ///
 /// Field work is linear in the circuit size; the only group work is the MSM
 /// committing to the cross term `T`. Returns the folded pair and `comm_T`.
-pub fn nifs_prove<C: CurveGroup>(
+pub fn nifs_prove<C: ProverMsm>(
     pp: &PublicParams<C>,
     shape: &R1CSShape<C::ScalarField>,
     u1: &RelaxedR1CSInstance<C>,
@@ -130,7 +131,7 @@ where
 /// where the verifier is not a circuit, e.g. an EVM contract hashing with
 /// Keccak.
 #[allow(clippy::too_many_arguments)]
-pub fn nifs_prove_with<C: CurveGroup>(
+pub fn nifs_prove_with<C: ProverMsm>(
     ck: &CommitmentKey<C>,
     shape: &R1CSShape<C::ScalarField>,
     u1: &RelaxedR1CSInstance<C>,
@@ -200,7 +201,7 @@ pub fn fold_instance<C: CurveGroup>(
 
 /// Prover: folds two *relaxed* pairs with the full equations of spec §2.4:
 /// `E ← E1 + r·T + r²·E2`, `u ← u1 + r·u2`.
-pub fn nifs_prove_relaxed<C: CurveGroup>(
+pub fn nifs_prove_relaxed<C: ProverMsm>(
     pp: &PublicParams<C>,
     shape: &R1CSShape<C::ScalarField>,
     u1: &RelaxedR1CSInstance<C>,
@@ -219,7 +220,7 @@ where
 
 /// [`nifs_prove_relaxed`] with a caller-supplied Fiat–Shamir challenge.
 #[allow(clippy::too_many_arguments)]
-pub fn nifs_prove_relaxed_with<C: CurveGroup>(
+pub fn nifs_prove_relaxed_with<C: ProverMsm>(
     ck: &CommitmentKey<C>,
     shape: &R1CSShape<C::ScalarField>,
     u1: &RelaxedR1CSInstance<C>,
@@ -288,7 +289,7 @@ pub fn fold_relaxed_instance<C: CurveGroup>(
 /// Samples a uniformly random *satisfying* relaxed pair: random `(W, x, u)`
 /// with `E := (A·Z) ∘ (B·Z) − u·(C·Z)`. Folding an accumulator with such a
 /// pair perfectly masks its witness.
-pub fn sample_relaxed<C: CurveGroup>(
+pub fn sample_relaxed<C: ProverMsm>(
     ck: &CommitmentKey<C>,
     shape: &R1CSShape<C::ScalarField>,
     rng: &mut impl RngCore,
@@ -322,10 +323,10 @@ pub fn check_accumulator<C: CurveGroup>(
     w: &RelaxedR1CSWitness<C>,
 ) -> Result<(), FoldError> {
     shape.is_sat_relaxed(&w.w, &u.x, u.u, &w.e)?;
-    if ck.commit(&w.w, w.r_w) != u.comm_w {
+    if ck.commit_reference(&w.w, w.r_w) != u.comm_w {
         return Err(FoldError::WitnessCommitmentMismatch);
     }
-    if ck.commit(&w.e, w.r_e) != u.comm_e {
+    if ck.commit_reference(&w.e, w.r_e) != u.comm_e {
         return Err(FoldError::ErrorCommitmentMismatch);
     }
     Ok(())

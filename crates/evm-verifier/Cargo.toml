@@ -29,6 +29,8 @@ llull-folder = { path = "../llull-folder", default-features = false, features = 
 
 [features]
 default = ["parallel", "cli"]
+# The prover's commitments with batched affine additions (llull-folder::msm).
+batch-affine-msm = ["llull-folder/batch-affine-msm"]
 parallel = [
     "llull-folder/parallel",
     "decider-zk/parallel",

@@ -2,10 +2,10 @@
 //! accumulator satisfies `(A·Z) ∘ (B·Z) = u·(C·Z) + E` with zero errors.
 
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::CurveGroup;
 use ark_ff::{One, PrimeField, UniformRand};
 use ark_serialize::CanonicalSerialize;
 use ark_std::test_rng;
+use llull_folder::msm::ProverMsm;
 use llull_folder::{
     check_accumulator, commit_witness,
     core_r1cs::{R1CSError, RelaxedR1CSInstance, RelaxedR1CSWitness},
@@ -17,7 +17,7 @@ use llull_folder::{
 };
 
 #[allow(clippy::type_complexity)]
-fn fold_chain<C: CurveGroup>(
+fn fold_chain<C: ProverMsm>(
     steps: usize,
     rounds: usize,
 ) -> (
@@ -66,7 +66,7 @@ where
     (pp, shape, acc_u, acc_w)
 }
 
-fn kpi_100_steps<C: CurveGroup>()
+fn kpi_100_steps<C: ProverMsm>()
 where
     C::BaseField: PrimeField + Absorb,
 {

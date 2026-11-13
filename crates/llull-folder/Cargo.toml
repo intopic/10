@@ -30,6 +30,9 @@ core-r1cs = { path = "../core-r1cs" }
 
 [features]
 default = ["parallel", "cli"]
+# The prover's commitments use `msm::msm` (batched affine additions) instead
+# of the arkworks multi-scalar multiplication; checks always use arkworks.
+batch-affine-msm = []
 parallel = [
     "dep:rayon",
     "core-r1cs/parallel",

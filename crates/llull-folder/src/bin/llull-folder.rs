@@ -2,9 +2,9 @@
 //! accumulator and verifies `(A·Z) ∘ (B·Z) = u·(C·Z) + E` with zero residual.
 
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::CurveGroup;
 use ark_ff::PrimeField;
 use ark_serialize::CanonicalSerialize;
+use llull_folder::msm::ProverMsm;
 use llull_folder::{
     check_accumulator, commit_witness,
     core_r1cs::{RelaxedR1CSInstance, RelaxedR1CSWitness},
@@ -71,7 +71,7 @@ fn peak_rss_mib() -> Option<f64> {
     Some(kb / 1024.0)
 }
 
-fn run<C: CurveGroup>(args: &Args) -> Result<(), String>
+fn run<C: ProverMsm>(args: &Args) -> Result<(), String>
 where
     C::BaseField: PrimeField + Absorb,
 {

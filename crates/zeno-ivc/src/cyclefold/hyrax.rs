@@ -24,7 +24,9 @@ use ark_ff::{PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use ark_std::cfg_iter;
 use core_r1cs::{R1CSError, R1CSShape};
-use llull_folder::{llull_combinator::compute_cross_term, CommitmentKey, FoldError};
+use llull_folder::{
+    llull_combinator::compute_cross_term, msm::ProverMsm, CommitmentKey, FoldError,
+};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -55,6 +57,17 @@ impl<C: CurveGroup> HyraxKey<C> {
         len.div_ceil(self.cols())
     }
 
+    /// [`Self::commit`] with the arkworks multi-scalar multiplication, for
+    /// checks of commitments against openings.
+    pub fn commit_reference(&self, v: &[C::ScalarField]) -> Vec<C> {
+        let rows: Vec<&[C::ScalarField]> = v.chunks(self.cols()).collect();
+        cfg_iter!(rows)
+            .map(|row| self.ck.commit_reference(row, C::ScalarField::zero()))
+            .collect()
+    }
+}
+
+impl<C: ProverMsm> HyraxKey<C> {
     /// One commitment per row; the last row may be shorter (zero-padded).
     pub fn commit(&self, v: &[C::ScalarField]) -> Vec<C> {
         let rows: Vec<&[C::ScalarField]> = v.chunks(self.cols()).collect();
@@ -109,7 +122,7 @@ impl<F: PrimeField> CfRelaxedWitness<F> {
 }
 
 /// Commits to the witness of a fresh CycleFold instance.
-pub fn cf_commit<C: CurveGroup>(
+pub fn cf_commit<C: ProverMsm>(
     key: &HyraxKey<C>,
     w: &[C::ScalarField],
     x: Vec<C::ScalarField>,
@@ -194,10 +207,10 @@ pub fn cf_check<C: CurveGroup>(
     acc_w: &CfRelaxedWitness<C::ScalarField>,
 ) -> Result<(), FoldError> {
     shape.is_sat_relaxed(&acc_w.w, &acc.x, acc.u, &acc_w.e)?;
-    if key.commit(&acc_w.w) != acc.comm_w {
+    if key.commit_reference(&acc_w.w) != acc.comm_w {
         return Err(FoldError::WitnessCommitmentMismatch);
     }
-    if key.commit(&acc_w.e) != acc.comm_e {
+    if key.commit_reference(&acc_w.e) != acc.comm_e {
         return Err(FoldError::ErrorCommitmentMismatch);
     }
     Ok(())
@@ -257,7 +270,7 @@ pub fn hyrax_check<C: CurveGroup>(
 ) -> bool {
     assert_eq!(rows.len(), weights.len());
     let lhs: C = rows.iter().zip(weights).map(|(c, l)| *c * l).sum();
-    lhs == key.ck.commit(combined, C::ScalarField::zero())
+    lhs == key.ck.commit_reference(combined, C::ScalarField::zero())
 }
 
 #[cfg(test)]
