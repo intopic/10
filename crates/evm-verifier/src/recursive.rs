@@ -43,6 +43,7 @@ use ark_bn254::{Fq, Fr, G1Projective as G1};
 use ark_ff::{One, UniformRand, Zero};
 use ark_relations::r1cs::{ConstraintSystem, SynthesisMode};
 use ark_std::rand::RngCore;
+use core_r1cs::mle::padded;
 use core_r1cs::{
     ark_bridge::{assignment_from_cs, shape_from_cs},
     R1CSInstance, R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness,
@@ -248,12 +249,6 @@ fn cf_words(cf: &CfRelaxedInstance<Grumpkin>) -> Vec<Word> {
     words.push(word(&cf.u));
     words.extend(cf.x.iter().map(word));
     words
-}
-
-fn padded(v: &[Fq], len: usize) -> Vec<Fq> {
-    let mut out = v.to_vec();
-    out.resize(len, Fq::zero());
-    out
 }
 
 /// `Σ_i IO_i·eq(r, i)` with `IO = (u, x, 0, …)`.

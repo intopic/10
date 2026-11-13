@@ -21,14 +21,14 @@ use super::{
     decider::{
         index_mle, inverses, padded, summand_k, summand_table, Challenges, CircuitKey, Dims,
     },
-    hyperkzg::{self, mle_eval, Claim, HyperKzgProof},
+    hyperkzg::{self, Claim, HyperKzgProof},
     transcript::KeccakTranscript,
 };
 use crate::{point_words, word, EvmParams, Word};
 use alloc::vec::Vec;
 use ark_bn254::{Fr, G1Projective as G1};
 use ark_ff::{One, Zero};
-use core_r1cs::{RelaxedR1CSInstance, RelaxedR1CSWitness};
+use core_r1cs::{mle::inner_product, RelaxedR1CSInstance, RelaxedR1CSWitness};
 use decider_zk::sumcheck::{self, eq_points, eq_table};
 
 /// Domain separator of the batched decider's transcript.
@@ -253,9 +253,11 @@ pub fn prove(items: &[Item], witnesses: &[&RelaxedR1CSWitness<G1>]) -> BatchProo
         },
         &mut tr,
     );
+    let eq_tail = eq_table(&ry[1..]);
     let v: Vec<[Fr; 2]> = (0..n_inst)
-        .map(|i| [tables[2 * i][0], mle_eval(&ws[i], &ry[1..])])
+        .map(|i| [tables[2 * i][0], inner_product(&ws[i], &eq_tail)])
         .collect();
+    drop(eq_tail);
     tr.absorb_scalars(&v.concat());
 
     // ---- 3. Lookups --------------------------------------------------------
@@ -367,9 +369,12 @@ pub fn prove(items: &[Item], witnesses: &[&RelaxedR1CSWitness<G1>]) -> BatchProo
             &h[i][1][..],
         ]);
     }
+    // One eq table and inner products, instead of a folded copy per value.
+    let eq_rk = eq_table(&rk);
     let evals_k: Vec<[Fr; 9]> = (0..n_inst)
-        .map(|i| core::array::from_fn(|j| mle_eval(polys_k[9 * i + j], &rk)))
+        .map(|i| core::array::from_fn(|j| inner_product(polys_k[9 * i + j], &eq_rk)))
         .collect();
+    drop(eq_rk);
     tr.absorb_scalars(&evals_k.concat());
 
     // ---- 5. Sum-checks over the two lookup tables ---------------------------

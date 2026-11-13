@@ -8,6 +8,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{Field, One};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::cfg_into_iter;
+use llull_folder::msm::ProverMsm;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -24,7 +25,7 @@ fn inner<F: Field>(a: &[F], b: &[F]) -> F {
 
 /// Proves `⟨a, b⟩ = v` where `P = ⟨a, gens⟩`. The caller must already have
 /// absorbed `P`, `b`'s defining data and `v` into the transcript.
-pub fn prove<C: CurveGroup>(
+pub fn prove<C: ProverMsm>(
     transcript: &mut Transcript,
     gens: &[C::Affine],
     q_base: C::Affine,
@@ -40,8 +41,9 @@ pub fn prove<C: CurveGroup>(
         let (a_l, a_r) = a.split_at(half);
         let (b_l, b_r) = b.split_at(half);
         let (g_l, g_r) = g.split_at(half);
-        let l = C::msm_unchecked(g_r, a_l) + q * inner(a_l, b_r);
-        let r = C::msm_unchecked(g_l, a_r) + q * inner(a_r, b_l);
+        // Prover-side MSMs (`llull_folder::msm`); `verify` keeps arkworks.
+        let l = C::prover_msm(g_r, a_l) + q * inner(a_l, b_r);
+        let r = C::prover_msm(g_l, a_r) + q * inner(a_r, b_l);
         transcript.absorb(b"ipa-l", &l);
         transcript.absorb(b"ipa-r", &r);
         // Fold with G' = G_L + x·G_R, a' = a_L + x⁻¹·a_R, b' = b_L + x·b_R,

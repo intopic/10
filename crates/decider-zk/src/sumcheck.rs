@@ -6,6 +6,8 @@
 use crate::fs_transcript::Transcript;
 use alloc::vec::Vec;
 use ark_ff::PrimeField;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// The Fiat–Shamir interface the sum-check needs, so the same code runs over
 /// the SHA-256 transcript of the transparent decider and the Keccak
@@ -31,20 +33,7 @@ pub fn eq_points<F: PrimeField>(a: &[F], b: &[F]) -> F {
     })
 }
 
-/// The table `eq(r, x)` for all `x ∈ {0,1}^len(r)`.
-pub fn eq_table<F: PrimeField>(r: &[F]) -> Vec<F> {
-    let mut table = alloc::vec![F::one()];
-    for ri in r {
-        let mut next = Vec::with_capacity(table.len() * 2);
-        for v in &table {
-            let hi = *v * ri;
-            next.push(*v - hi);
-            next.push(hi);
-        }
-        table = next;
-    }
-    table
-}
+pub use core_r1cs::mle::eq_table;
 
 /// `eq(r, index)` for a single boolean index.
 pub fn eq_at<F: PrimeField>(r: &[F], index: usize) -> F {
@@ -58,14 +47,51 @@ pub fn eq_at<F: PrimeField>(r: &[F], index: usize) -> F {
     })
 }
 
+/// Tables at least this long are processed in parallel.
+#[cfg(feature = "parallel")]
+const PARALLEL_FROM: usize = 1 << 12;
+
 /// Binds the first variable of a table to `r`, halving it.
 pub fn bind<F: PrimeField>(table: &mut Vec<F>, r: F) {
     let half = table.len() / 2;
-    for j in 0..half {
-        let lo = table[j];
-        table[j] = lo + r * (table[j + half] - lo);
+    let (lo, hi) = table.split_at_mut(half);
+    let fold = |(lo, hi): (&mut F, &F)| *lo += r * (*hi - *lo);
+    #[cfg(feature = "parallel")]
+    if half >= PARALLEL_FROM {
+        lo.par_iter_mut().zip(hi.par_iter()).for_each(fold);
+    } else {
+        lo.iter_mut().zip(hi.iter()).for_each(fold);
     }
+    #[cfg(not(feature = "parallel"))]
+    lo.iter_mut().zip(hi.iter()).for_each(fold);
     table.truncate(half);
+}
+
+/// One round's partial sums over the indices `range` of the lower half:
+/// the evaluations of the round polynomial at `0, 2, …, degree` (index 1 is
+/// left at zero).
+fn round_sums<F: PrimeField>(
+    tables: &[Vec<F>],
+    half: usize,
+    degree: usize,
+    combine: &(impl Fn(&[F]) -> F + Sync),
+    range: core::ops::Range<usize>,
+) -> Vec<F> {
+    let mut evals = alloc::vec![F::zero(); degree + 1];
+    let mut scratch = alloc::vec![F::zero(); tables.len()];
+    for j in range {
+        for (t, eval) in evals.iter_mut().enumerate() {
+            if t == 1 {
+                continue;
+            }
+            let t_f = F::from(t as u64);
+            for (slot, table) in scratch.iter_mut().zip(tables.iter()) {
+                *slot = table[j] + t_f * (table[j + half] - table[j]);
+            }
+            *eval += combine(&scratch);
+        }
+    }
+    evals
 }
 
 /// Evaluates at `r` the polynomial of degree `evals.len() − 1` given by its
@@ -94,28 +120,38 @@ pub fn interpolate<F: PrimeField>(evals: &[F], r: F) -> F {
 pub fn prove<F: PrimeField, T: FsTranscript<F>>(
     tables: &mut [Vec<F>],
     degree: usize,
-    combine: impl Fn(&[F]) -> F,
+    combine: impl Fn(&[F]) -> F + Sync,
     transcript: &mut T,
 ) -> (Vec<F>, Vec<F>) {
     let rounds = tables[0].len().trailing_zeros() as usize;
     let mut messages = Vec::with_capacity(rounds * degree);
     let mut point = Vec::with_capacity(rounds);
-    let mut scratch = alloc::vec![F::zero(); tables.len()];
     for _ in 0..rounds {
         let half = tables[0].len() / 2;
-        let mut evals = alloc::vec![F::zero(); degree + 1];
-        for j in 0..half {
-            for (t, eval) in evals.iter_mut().enumerate() {
-                if t == 1 {
-                    continue;
-                }
-                let t_f = F::from(t as u64);
-                for (slot, table) in scratch.iter_mut().zip(tables.iter()) {
-                    *slot = table[j] + t_f * (table[j + half] - table[j]);
-                }
-                *eval += combine(&scratch);
-            }
-        }
+        // Field additions are exact, so the sums do not depend on how the
+        // range is split: the messages are the same with or without threads.
+        #[cfg(feature = "parallel")]
+        let evals = if half >= PARALLEL_FROM {
+            let chunk = half.div_ceil(rayon::current_num_threads() * 4).max(1024);
+            let shared: &[Vec<F>] = tables;
+            (0..half.div_ceil(chunk))
+                .into_par_iter()
+                .map(|c| {
+                    let range = c * chunk..((c + 1) * chunk).min(half);
+                    round_sums(shared, half, degree, &combine, range)
+                })
+                .reduce(
+                    || alloc::vec![F::zero(); degree + 1],
+                    |mut a, b| {
+                        a.iter_mut().zip(&b).for_each(|(x, y)| *x += y);
+                        a
+                    },
+                )
+        } else {
+            round_sums(tables, half, degree, &combine, 0..half)
+        };
+        #[cfg(not(feature = "parallel"))]
+        let evals = round_sums(tables, half, degree, &combine, 0..half);
         let round: Vec<F> = evals
             .iter()
             .enumerate()
@@ -129,6 +165,11 @@ pub fn prove<F: PrimeField, T: FsTranscript<F>>(
         }
         messages.extend(round);
         point.push(r);
+    }
+    // The bound tables hold one value each: give their memory back now, not
+    // when the caller's bindings go out of scope.
+    for table in tables.iter_mut() {
+        table.shrink_to_fit();
     }
     (messages, point)
 }

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {ZenoLlullVerifier, IZenoUniversalDecider} from "../ZenoLlullVerifier.sol";
+import {ZenoBn254} from "../lib/ZenoBn254.sol";
 
 /// @title ZenoLlullVerifierDevGroth16 — DEVELOPMENT ONLY (mode C)
 /// @notice `ZenoLlullVerifier` plus the Groth16 decider of early development
@@ -63,35 +64,35 @@ contract ZenoLlullVerifierDevGroth16 is ZenoLlullVerifier {
         //   P = comm_W + g·comm_E − (r_W + g·r_E)·H − (W(c) + g·E(c))·G + c·π,   π = π_W + g·π_E
         //   e(P, G₂) · e(−π, [τ]₂) = 1
         {
-            (uint256 px, uint256 py) = _addMul(s.wx, s.wy, s.ex, s.ey, g);
-            (px, py) = _addMul(px, py, key[0], _neg(key[1]), addmod(proof[2], mulmod(g, proof[3], R), R));
-            (px, py) = _addMul(px, py, 1, Q - 2, addmod(proof[0], mulmod(g, proof[1], R), R));
-            (uint256 qx, uint256 qy) = _addMul(proof[4], proof[5], proof[6], proof[7], g);
-            (px, py) = _addMul(px, py, qx, qy, c);
+            (uint256 px, uint256 py) = ZenoBn254.addMul(s.wx, s.wy, s.ex, s.ey, g);
+            (px, py) = ZenoBn254.addMul(px, py, key[0], ZenoBn254.neg(key[1]), addmod(proof[2], mulmod(g, proof[3], R), R));
+            (px, py) = ZenoBn254.addMul(px, py, 1, Q - 2, addmod(proof[0], mulmod(g, proof[1], R), R));
+            (uint256 qx, uint256 qy) = ZenoBn254.addMul(proof[4], proof[5], proof[6], proof[7], g);
+            (px, py) = ZenoBn254.addMul(px, py, qx, qy, c);
             pairs[0] = px;
             pairs[1] = py;
-            pairs[2] = G2_X_IM;
-            pairs[3] = G2_X_RE;
-            pairs[4] = G2_Y_IM;
-            pairs[5] = G2_Y_RE;
+            pairs[2] = ZenoBn254.G2_X_IM;
+            pairs[3] = ZenoBn254.G2_X_RE;
+            pairs[4] = ZenoBn254.G2_Y_IM;
+            pairs[5] = ZenoBn254.G2_Y_RE;
             pairs[6] = qx;
-            pairs[7] = _neg(qy);
+            pairs[7] = ZenoBn254.neg(qy);
             for (uint256 i = 0; i < 4; ++i) pairs[8 + i] = key[2 + i];
         }
         // Groth16 with public inputs (u, x, d, c, W(c), E(c)):
         //   e(−A, B) · e(α, β) · e(IC₀ + Σ inᵢ·ICᵢ, γ) · e(C, δ) = 1
         {
-            (uint256 vx, uint256 vy) = _addMul(key[20], key[21], key[22], key[23], s.u);
+            (uint256 vx, uint256 vy) = ZenoBn254.addMul(key[20], key[21], key[22], key[23], s.u);
             uint256 n = x.length;
             for (uint256 i = 0; i < n; ++i) {
-                (vx, vy) = _addMul(vx, vy, key[24 + 2 * i], key[25 + 2 * i], x[i]);
+                (vx, vy) = ZenoBn254.addMul(vx, vy, key[24 + 2 * i], key[25 + 2 * i], x[i]);
             }
-            (vx, vy) = _addMul(vx, vy, key[24 + 2 * n], key[25 + 2 * n], proof[16]);
-            (vx, vy) = _addMul(vx, vy, key[26 + 2 * n], key[27 + 2 * n], c);
-            (vx, vy) = _addMul(vx, vy, key[28 + 2 * n], key[29 + 2 * n], proof[0]);
-            (vx, vy) = _addMul(vx, vy, key[30 + 2 * n], key[31 + 2 * n], proof[1]);
+            (vx, vy) = ZenoBn254.addMul(vx, vy, key[24 + 2 * n], key[25 + 2 * n], proof[16]);
+            (vx, vy) = ZenoBn254.addMul(vx, vy, key[26 + 2 * n], key[27 + 2 * n], c);
+            (vx, vy) = ZenoBn254.addMul(vx, vy, key[28 + 2 * n], key[29 + 2 * n], proof[0]);
+            (vx, vy) = ZenoBn254.addMul(vx, vy, key[30 + 2 * n], key[31 + 2 * n], proof[1]);
             pairs[12] = proof[8];
-            pairs[13] = _neg(proof[9]);
+            pairs[13] = ZenoBn254.neg(proof[9]);
             for (uint256 i = 0; i < 4; ++i) pairs[14 + i] = proof[10 + i];
             pairs[18] = key[6];
             pairs[19] = key[7];

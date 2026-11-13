@@ -33,17 +33,16 @@ use crate::{word, Word};
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use ark_bn254::Fq;
 use ark_ff::{AdditiveGroup, Field, One, Zero};
-use core_r1cs::R1CSShape;
+use core_r1cs::{
+    mle::{log2_ceil, padded_column},
+    R1CSShape,
+};
 use sha3::{Digest, Keccak256};
 use zeno_ivc::cyclefold::{
     circuit::{CF_SLOTS, CF_UNIFORM_TYPES},
     hyrax::eq_table,
     T_BITS,
 };
-
-fn log2_ceil(v: usize) -> usize {
-    v.next_power_of_two().trailing_zeros() as usize
-}
 
 /// Dimensions of the Spartan argument over the CycleFold circuit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,17 +60,6 @@ impl CfDims {
     }
 }
 
-/// Column of `Z = (W, x, u)` inside the padded `(W ‖ (u, x))` of length `2n`.
-fn remap(shape: &R1CSShape<Fq>, n: usize, col: usize) -> usize {
-    if col < shape.num_vars {
-        col
-    } else if col == shape.num_vars + shape.num_io {
-        n
-    } else {
-        n + 1 + (col - shape.num_vars)
-    }
-}
-
 /// Every non-zero entry `(matrix, row, column in the padded Z, value)`.
 pub fn entries(shape: &R1CSShape<Fq>) -> Vec<(usize, usize, usize, Fq)> {
     let n = 1 << CfDims::of(shape).log_n;
@@ -79,7 +67,7 @@ pub fn entries(shape: &R1CSShape<Fq>) -> Vec<(usize, usize, usize, Fq)> {
     for (k, m) in [&shape.a, &shape.b, &shape.c].iter().enumerate() {
         for row in 0..m.num_rows {
             for e in m.row_ptr[row]..m.row_ptr[row + 1] {
-                out.push((k, row, remap(shape, n, m.col_idx[e]), m.values[e]));
+                out.push((k, row, padded_column(shape, n, m.col_idx[e]), m.values[e]));
             }
         }
     }

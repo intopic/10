@@ -23,6 +23,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::CanonicalSerialize;
 use ark_std::cfg_iter;
+pub use core_r1cs::mle::eq_table;
 use core_r1cs::{R1CSError, R1CSShape};
 use llull_folder::{
     llull_combinator::compute_cross_term, msm::ProverMsm, CommitmentKey, FoldError,
@@ -214,22 +215,6 @@ pub fn cf_check<C: CurveGroup>(
         return Err(FoldError::ErrorCommitmentMismatch);
     }
     Ok(())
-}
-
-/// The table `eq(r, k)` for all `k ∈ {0,1}^len(r)`, `r[0]` being the most
-/// significant bit (the convention of `decider_zk::sumcheck::eq_table`).
-pub fn eq_table<F: PrimeField>(r: &[F]) -> Vec<F> {
-    let mut table = alloc::vec![F::one()];
-    for ri in r {
-        let mut next = Vec::with_capacity(table.len() * 2);
-        for v in &table {
-            let hi = *v * ri;
-            next.push(*v - hi);
-            next.push(hi);
-        }
-        table = next;
-    }
-    table
 }
 
 /// The opening of `ṽ(r)` for a vector `v` with `C` columns, zero-padded to

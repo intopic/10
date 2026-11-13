@@ -14,7 +14,7 @@ use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective as G1, G2Affine, G2Pr
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
 use ark_ff::{BigInt, BigInteger, Field, PrimeField, UniformRand, Zero};
 use ark_std::rand::RngCore;
-use llull_folder::{pedersen::hash_to_curve, CommitmentKey};
+use llull_folder::{msm::ProverMsm, pedersen::hash_to_curve, CommitmentKey};
 
 /// A universal SRS: `[τ^i]₁` for `i < n`, and `[τ]₂`.
 #[derive(Clone, Debug)]
@@ -209,7 +209,20 @@ fn montgomery_fq(bytes: &[u8]) -> Result<Fq, PtauError> {
 
 /// Evaluates the polynomial with coefficients `coeffs` at `c`.
 pub fn evaluate(coeffs: &[Fr], c: Fr) -> Fr {
-    coeffs.iter().rev().fold(Fr::zero(), |acc, a| acc * c + a)
+    let horner = |block: &[Fr]| block.iter().rev().fold(Fr::zero(), |acc, a| acc * c + a);
+    // Long polynomials: Horner on blocks in parallel, then Horner over the
+    // blocks' values with c^BLOCK. The value is the same field element.
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        const BLOCK: usize = 1 << 12;
+        if coeffs.len() >= 4 * BLOCK {
+            let parts: Vec<Fr> = coeffs.par_chunks(BLOCK).map(horner).collect();
+            let step = c.pow([BLOCK as u64]);
+            return parts.iter().rev().fold(Fr::zero(), |acc, a| acc * step + a);
+        }
+    }
+    horner(coeffs)
 }
 
 /// Opens the polynomial with coefficients `coeffs` at `c`: returns its value
@@ -228,7 +241,8 @@ pub fn open(ck: &CommitmentKey<G1>, coeffs: &[Fr], c: Fr) -> (Fr, G1) {
     let proof = if quotient.iter().all(Zero::is_zero) {
         G1::zero()
     } else {
-        G1::msm_unchecked(&ck.gens[..quotient.len()], &quotient)
+        // A prover-side MSM (`llull_folder::msm`); verifiers never call this.
+        G1::prover_msm(&ck.gens[..quotient.len()], &quotient)
     };
     (carry, proof)
 }

@@ -26,6 +26,7 @@ function compile() {
     language: "Solidity",
     sources: {
       "ZenoLlullVerifier.sol": read("ZenoLlullVerifier.sol"),
+      "lib/ZenoBn254.sol": read("lib/ZenoBn254.sol"),
       "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
       "dev/ZenoLlullVerifierDevGroth16.sol": read("dev/ZenoLlullVerifierDevGroth16.sol"),
     },

@@ -18,7 +18,9 @@ use alloc::vec::Vec;
 use ark_ec::CurveGroup;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use core_r1cs::mle::{log2_ceil, padded, padded_column};
 use core_r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness, SparseMatrix};
+use llull_folder::msm::ProverMsm;
 use llull_folder::CommitmentKey;
 
 #[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
@@ -43,10 +45,9 @@ struct Dims {
 
 impl Dims {
     fn of<F: PrimeField>(shape: &R1CSShape<F>) -> Self {
-        let log2 = |v: usize| v.next_power_of_two().trailing_zeros() as usize;
         Self {
-            log_m: log2(shape.num_constraints.max(2)),
-            log_n: log2(shape.num_vars.max(shape.num_io + 1).max(2)),
+            log_m: log2_ceil(shape.num_constraints.max(2)),
+            log_n: log2_ceil(shape.num_vars.max(shape.num_io + 1).max(2)),
         }
     }
     fn m(&self) -> usize {
@@ -54,17 +55,6 @@ impl Dims {
     }
     fn n(&self) -> usize {
         1 << self.log_n
-    }
-}
-
-/// Column of the engine's `Z = (W, x, u)` inside the padded `(W ‖ (u, x))`.
-fn remap<F: PrimeField>(shape: &R1CSShape<F>, n: usize, col: usize) -> usize {
-    if col < shape.num_vars {
-        col
-    } else if col == shape.num_vars + shape.num_io {
-        n
-    } else {
-        n + 1 + (col - shape.num_vars)
     }
 }
 
@@ -98,21 +88,15 @@ fn fold_rows<F: PrimeField>(
         for (i, rw) in row_weight.iter().enumerate().take(matrix.num_rows) {
             let w = *rw * weight;
             for k in matrix.row_ptr[i]..matrix.row_ptr[i + 1] {
-                out[remap(shape, n, matrix.col_idx[k])] += w * matrix.values[k];
+                out[padded_column(shape, n, matrix.col_idx[k])] += w * matrix.values[k];
             }
         }
     }
     out
 }
 
-fn padded<F: PrimeField>(v: &[F], len: usize) -> Vec<F> {
-    let mut out = v.to_vec();
-    out.resize(len, F::zero());
-    out
-}
-
 /// Proves that `(u, w)` satisfies the relaxed R1CS relation of `shape`.
-pub fn prove<C: CurveGroup>(
+pub fn prove<C: ProverMsm>(
     ck: &CommitmentKey<C>,
     digest: &C::BaseField,
     shape: &R1CSShape<C::ScalarField>,

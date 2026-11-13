@@ -26,21 +26,19 @@
 //! number of pairings, which is what makes an EVM verifier possible.
 
 use super::{
-    hyperkzg::{self, mle_eval, Claim, HyperKzgProof},
+    hyperkzg::{self, Claim, HyperKzgProof},
     transcript::KeccakTranscript,
 };
 use crate::{point_words, word, EvmParams, Word};
 use alloc::vec::Vec;
 use ark_bn254::{Fr, G1Projective as G1, G2Affine};
 use ark_ff::{batch_inversion, One, Zero};
+pub(crate) use core_r1cs::mle::padded;
+use core_r1cs::mle::{inner_product, log2_ceil, padded_column};
 use core_r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness, SparseMatrix};
 use decider_zk::sumcheck::{self, eq_points, eq_table};
 use llull_folder::CommitmentKey;
 use sha3::{Digest, Keccak256};
-
-fn log2_ceil(v: usize) -> usize {
-    v.next_power_of_two().trailing_zeros() as usize
-}
 
 /// Padded dimensions of the argument.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,17 +75,6 @@ impl Dims {
     /// Length of the reference string the argument needs.
     pub fn srs_len(&self) -> usize {
         self.m().max(self.z()).max(self.k())
-    }
-}
-
-/// Column of the engine's `Z = (W, x, u)` inside the padded `(W ‖ (u, x))`.
-fn remap(shape: &R1CSShape<Fr>, n: usize, col: usize) -> usize {
-    if col < shape.num_vars {
-        col
-    } else if col == shape.num_vars + shape.num_io {
-        n
-    } else {
-        n + 1 + (col - shape.num_vars)
     }
 }
 
@@ -145,7 +132,7 @@ impl CircuitKey {
             for i in 0..matrix.num_rows {
                 for e in matrix.row_ptr[i]..matrix.row_ptr[i + 1] {
                     row_idx[next] = i;
-                    col_idx[next] = remap(shape, n, matrix.col_idx[e]);
+                    col_idx[next] = padded_column(shape, n, matrix.col_idx[e]);
                     val[which][next] = matrix.values[e];
                     next += 1;
                 }
@@ -319,12 +306,6 @@ fn start(
     tr
 }
 
-pub(crate) fn padded(v: &[Fr], len: usize) -> Vec<Fr> {
-    let mut out = v.to_vec();
-    out.resize(len, Fr::zero());
-    out
-}
-
 /// The multilinear extension of the table `j ↦ j`, at `point`.
 pub(crate) fn index_mle(point: &[Fr]) -> Fr {
     point.iter().fold(Fr::zero(), |acc, p| acc + acc + p)
@@ -417,7 +398,7 @@ pub fn prove(
     let mut tables = [combined, z_padded];
     let (inner, ry) = sumcheck::prove(&mut tables, 2, |v| v[0] * v[1], &mut tr);
     let v_m = tables[0][0];
-    let v_w = mle_eval(&w_padded, &ry[1..]);
+    let v_w = inner_product(&w_padded, &eq_table(&ry[1..]));
     tr.absorb_scalars(&[v_m, v_w]);
 
     // ---- 3. Lookups of eq(r_x, ·) and eq(r_y, ·) at the matrix indices ----
@@ -488,7 +469,10 @@ pub fn prove(
         &h1r,
         &h1c,
     ];
-    let evals_k: [Fr; 9] = core::array::from_fn(|i| mle_eval(polys_k[i], &rk));
+    // One eq table and nine inner products, instead of nine folded copies.
+    let eq_rk = eq_table(&rk);
+    let evals_k: [Fr; 9] = core::array::from_fn(|i| inner_product(polys_k[i], &eq_rk));
+    drop(eq_rk);
     tr.absorb_scalars(&evals_k);
 
     // ---- 5. Sum-checks over the two lookup tables ---------------------------

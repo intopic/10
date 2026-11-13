@@ -24,6 +24,7 @@ function compile() {
     language: "Solidity",
     sources: {
       "ZenoBatchedDecider.sol": read("ZenoBatchedDecider.sol"),
+      "lib/ZenoBn254.sol": read("lib/ZenoBn254.sol"),
       "ZenoRecursiveVerifier.sol": read("ZenoRecursiveVerifier.sol"),
       "ZenoCycleFoldShape.sol": read("ZenoCycleFoldShape.sol"),
     },

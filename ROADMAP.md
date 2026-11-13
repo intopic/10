@@ -123,6 +123,21 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
   - `universalDecider` është `immutable` (konstruktor); `setUniversalDecider` u hoq
   - `finalizeRecursive` refuzon skalarë jo-kanonikë në `state` dhe `cfProof` (3.64 M gas, +0.08 M)
   - mënyra C (Groth16) jashtë prodhimit: feature `dev-groth16`, kontrata `dev/ZenoLlullVerifierDevGroth16.sol`
+- [x] **Përshpejtim i provuesit pas riauditimit** (vetëm provuesi; provat dhe transkriptet janë bajt
+      për bajt të njëjtat), matur në 4 vCPU para → pas:
+  - `sumcheck::prove` dhe `bind` paralel (rayon), `hyperkzg` paralel (kombinimi, palosja e shtresave,
+    vlerësimet), `kzg::evaluate` me blloqe paralele; `kzg::open` dhe provuesi IPA me MSM-në
+    *batch-affine*; një tabelë `eq` dhe prodhime të brendshme në vend të nëntë kopjeve te `mle_eval`;
+    tabelat e sum-check-ut e lirojnë memorien sapo lidhen
+  - provuesi i `finalizeRecursive` **31.4 s → 23.3 s** (−26%); qarku mbyllës 18.7 s → 14.3 s (−24%);
+    kompresimi i mënyrës A (2^16) 4.31 → 4.19 s në Pasta, 4.54 → 4.27 s në BN254 (aty mbizotëron
+    palosja e gjeneratorëve të IPA-s, jo MSM-ja); memoria maksimale e pandryshuar (1.89 GB)
+  - `CircomR1cs::step` i ndan matricat me `Arc` në vend që t'i kopjojë në çdo hap
+  - ndihmës të përbashkët: `core_r1cs::mle` (`eq_table`, `padded`, `padded_column`, `log2_ceil`,
+    `inner_product`) në vend të 2–3 kopjeve; `contracts/lib/ZenoBn254.sol` (`ZenoBn254`: `addMul`,
+    `neg`, çiftëzimi, konstantet G2; `ZenoField`: interpolimet dhe `eq` me modul parametër) për të
+    katër kontratat. Kosto: modulet si parametra shtojnë ~0.5% gaz (`finalizeRecursive` 3 644 797 →
+    3 663 215; `finalizeUniversal` 2^16 1 879 283 → 1 889 853)
 - [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të

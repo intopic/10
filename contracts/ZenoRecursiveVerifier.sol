@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
+import {ZenoBn254, ZenoField} from "./lib/ZenoBn254.sol";
+
 import {ZenoCycleFoldShape} from "./ZenoCycleFoldShape.sol";
 
 /// The batched universal decider, without its final pairing check.
@@ -50,15 +52,6 @@ contract ZenoRecursiveVerifier {
     uint256 internal constant LOG_COLS = 7;
     uint256 internal constant COLS = 128;
     uint256 internal constant LIMB_MASK = (1 << 128) - 1;
-    // Generator of G2, in the precompile's (imaginary, real) coordinate order.
-    uint256 internal constant G2_X_IM =
-        11559732032986387107991004021392285783925812861821192530917403151452391805634;
-    uint256 internal constant G2_X_RE =
-        10857046999023057135944570762232829481370756359578518086990519993285655852781;
-    uint256 internal constant G2_Y_IM =
-        4082367875863433681332203403145435568316851327593401208105741076214120093531;
-    uint256 internal constant G2_Y_RE =
-        8495653923123431417604973247489272438418190587263600148770280649306958101930;
 
     bytes32 internal constant DOMAIN = keccak256("zeno-llull/recursive-decider/v1");
 
@@ -70,7 +63,6 @@ contract ZenoRecursiveVerifier {
 
     error MalformedInput();
     error InvalidProof(uint256 step);
-    error InvalidPoint();
 
     /// Dimensions read from the header of the CycleFold records.
     struct Dims {
@@ -159,9 +151,9 @@ contract ZenoRecursiveVerifier {
             tr = _absorb(tr, abi.encodePacked(state[l.commT:l.commT + 2]));
             uint256 r1;
             (tr, r1) = _challenge(tr, R);
-            (acc[0], acc[1]) = _addMul(state[l.acc], state[l.acc + 1], state[l.commT], state[l.commT + 1], r1);
+            (acc[0], acc[1]) = ZenoBn254.addMul(state[l.acc], state[l.acc + 1], state[l.commT], state[l.commT + 1], r1);
             acc[2] = addmod(state[l.acc + 2], r1, R);
-            (acc[3], acc[4]) = _addMul(state[l.acc + 3], state[l.acc + 4], state[l.last], state[l.last + 1], r1);
+            (acc[3], acc[4]) = ZenoBn254.addMul(state[l.acc + 3], state[l.acc + 4], state[l.last], state[l.last + 1], r1);
             acc[5] = addmod(state[l.acc + 5], mulmod(r1, state[l.last + 2], R), R);
 
             tr = _absorb(tr, abi.encodePacked(state[l.mask:l.mask + 6]));
@@ -169,10 +161,10 @@ contract ZenoRecursiveVerifier {
             uint256 r2;
             (tr, r2) = _challenge(tr, R);
             uint256 m = l.mask;
-            (acc[0], acc[1]) = _addMul(acc[0], acc[1], state[l.maskT], state[l.maskT + 1], r2);
-            (acc[0], acc[1]) = _addMul(acc[0], acc[1], state[m], state[m + 1], mulmod(r2, r2, R));
+            (acc[0], acc[1]) = ZenoBn254.addMul(acc[0], acc[1], state[l.maskT], state[l.maskT + 1], r2);
+            (acc[0], acc[1]) = ZenoBn254.addMul(acc[0], acc[1], state[m], state[m + 1], mulmod(r2, r2, R));
             acc[2] = addmod(acc[2], mulmod(r2, state[m + 2], R), R);
-            (acc[3], acc[4]) = _addMul(acc[3], acc[4], state[m + 3], state[m + 4], r2);
+            (acc[3], acc[4]) = ZenoBn254.addMul(acc[3], acc[4], state[m + 3], state[m + 4], r2);
             acc[5] = addmod(acc[5], mulmod(r2, state[m + 5], R), R);
         }
 
@@ -192,7 +184,13 @@ contract ZenoRecursiveVerifier {
             (keys[0], keys[1]) = (primaryKey, closingKey);
             uint256[][] memory accs = new uint256[][](2);
             (accs[0], accs[1]) = (acc, closing);
-            _pairing(decider.verifyDeferred(vks, keys, accs, deciderProof), primaryKey);
+            uint256[4] memory lr = decider.verifyDeferred(vks, keys, accs, deciderProof);
+            // e(L, G₂) = e(Rt, [τ]₂)
+            if (
+                !ZenoBn254.pairingEquals(
+                    lr[0], lr[1], lr[2], lr[3], primaryKey[19], primaryKey[20], primaryKey[21], primaryKey[22]
+                )
+            ) revert InvalidProof(19);
         }
 
         bytes32 claimHash = keccak256(abi.encodePacked(state[0], state[2:2 + 2 * d.arity]));
@@ -278,7 +276,7 @@ contract ZenoRecursiveVerifier {
                 Q - addmod(mulmod(ux[0], p[pos + 2], Q), p[pos + 3], Q),
                 Q
             );
-            if (claim != mulmod(_eqPoints(tau, out.rx), rhs, Q)) revert InvalidProof(11);
+            if (claim != mulmod(ZenoField.eqPoints(tau, out.rx, Q), rhs, Q)) revert InvalidProof(11);
         }
         tr = _absorb(tr, abi.encodePacked(p[pos:pos + 4]));
         uint256 rho;
@@ -505,45 +503,9 @@ contract ZenoRecursiveVerifier {
             (tr, r) = _challenge(tr, Q);
             point[i] = r;
             uint256 p1 = addmod(claim, Q - m[0] % Q, Q);
-            claim = degree == 2 ? _interp2(m[0], p1, m[1], r) : _interp3(m[0], p1, m[1], m[2], r);
+            claim = degree == 2 ? ZenoField.interp2(m[0], p1, m[1], r, Q, INV2_Q) : ZenoField.interp3(m[0], p1, m[1], m[2], r, Q, INV2_Q, INV6_Q);
         }
         return (tr, claim, point);
-    }
-
-    function _interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r) private pure returns (uint256) {
-        uint256 r1 = addmod(r, Q - 1, Q);
-        uint256 r2 = addmod(r, Q - 2, Q);
-        return addmod(
-            mulmod(mulmod(p0, INV2_Q, Q), mulmod(r1, r2, Q), Q),
-            addmod(Q - mulmod(p1, mulmod(r, r2, Q), Q), mulmod(mulmod(p2, INV2_Q, Q), mulmod(r, r1, Q), Q), Q),
-            Q
-        );
-    }
-
-    function _interp3(uint256 p0, uint256 p1, uint256 p2, uint256 p3, uint256 r)
-        private
-        pure
-        returns (uint256)
-    {
-        uint256 r1 = addmod(r, Q - 1, Q);
-        uint256 r2 = addmod(r, Q - 2, Q);
-        uint256 r3 = addmod(r, Q - 3, Q);
-        uint256 acc = mulmod(p0, Q - mulmod(mulmod(mulmod(r1, r2, Q), r3, Q), INV6_Q, Q), Q);
-        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, Q), r3, Q), INV2_Q, Q), Q), Q);
-        acc = addmod(acc, mulmod(p2, Q - mulmod(mulmod(mulmod(r, r1, Q), r3, Q), INV2_Q, Q), Q), Q);
-        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, Q), r2, Q), INV6_Q, Q), Q), Q);
-    }
-
-    function _eqPoints(uint256[] memory a, uint256[] memory b) private pure returns (uint256 acc) {
-        acc = 1;
-        for (uint256 i = 0; i < a.length; ++i) {
-            uint256 term = addmod(
-                mulmod(a[i], b[i], Q),
-                mulmod(addmod(1, Q - a[i], Q), addmod(1, Q - b[i], Q), Q),
-                Q
-            );
-            acc = mulmod(acc, term, Q);
-        }
     }
 
     /// @dev The table `eq(point[start..start+len], ·)` (first variable = MSB).
@@ -586,45 +548,4 @@ contract ZenoRecursiveVerifier {
         c = uint256(next) % m;
     }
 
-    function _neg(uint256 y) private pure returns (uint256) {
-        return y == 0 ? 0 : Q - y;
-    }
-
-    /// @dev `e(L, G₂)·e(−Rt, [τ]₂) = 1` for `lr = (L, Rt)`.
-    function _pairing(uint256[4] memory lr, uint256[] calldata key) private view {
-        uint256[12] memory input = [
-            lr[0], lr[1], G2_X_IM, G2_X_RE, G2_Y_IM, G2_Y_RE,
-            lr[2], _neg(lr[3]), key[19], key[20], key[21], key[22]
-        ];
-        bool ok;
-        uint256[1] memory out;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x08, input, 0x180, out, 0x20)
-        }
-        if (!ok || out[0] != 1) revert InvalidProof(19);
-    }
-
-    /// @dev Returns `(ax, ay) + k·(bx, by)`; the identity is `(0, 0)`.
-    function _addMul(uint256 ax, uint256 ay, uint256 bx, uint256 by, uint256 k)
-        private
-        view
-        returns (uint256, uint256)
-    {
-        uint256[4] memory buf;
-        bool ok;
-        buf[0] = bx;
-        buf[1] = by;
-        buf[2] = k;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x07, buf, 0x60, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        buf[2] = ax;
-        buf[3] = ay;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x06, buf, 0x80, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        return (buf[0], buf[1]);
-    }
 }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
+import {ZenoBn254, ZenoField} from "./lib/ZenoBn254.sol";
+
 /// @title ZenoBatchedDecider — one universal decider proof for several circuits
 /// @notice Verifies, in one argument, that several KZG-committed relaxed R1CS
 /// accumulators of *different* circuits are satisfiable. The circuit keys
@@ -22,7 +24,6 @@ contract ZenoBatchedDecider {
     bytes32 internal constant DOMAIN = keccak256("zeno-llull/universal-batch/v1");
 
     error InvalidProof(uint256 step);
-    error InvalidPoint();
     error MalformedInput();
 
     struct State {
@@ -148,7 +149,7 @@ contract ZenoBatchedDecider {
             rhs = addmod(rhs, mulmod(a, term, R), R);
             a = mulmod(a, alpha, R);
         }
-        if (claim != mulmod(_eqPoints(tau, run.rx), rhs, R)) revert InvalidProof(1);
+        if (claim != mulmod(ZenoField.eqPoints(tau, run.rx, R), rhs, R)) revert InvalidProof(1);
         _absorb(s, run.claims);
     }
 
@@ -225,7 +226,7 @@ contract ZenoBatchedDecider {
         uint256 claim;
         (claim, run.rk) = _sumcheck(s, start, run.logK, 3);
         run.evalsK = _take(s, 9 * s.n);
-        uint256 eq = _eqPoints(tauK, run.rk);
+        uint256 eq = ZenoField.eqPoints(tauK, run.rk, R);
         uint256 expected;
         a = 1;
         for (uint256 i = 0; i < s.n; ++i) {
@@ -290,8 +291,8 @@ contract ZenoBatchedDecider {
         uint256 claim;
         (claim, r) = _sumcheck(s, start, log, 3);
         // The evaluations follow in the proof; peek at them.
-        uint256 eqTau = _eqPoints(tau, r);
-        uint256 eqPt = _eqPoints(point, r);
+        uint256 eqTau = ZenoField.eqPoints(tau, r, R);
+        uint256 eqPt = ZenoField.eqPoints(point, r, R);
         uint256 index;
         for (uint256 i = 0; i < log; ++i) index = addmod(addmod(index, index, R), r[i], R);
         uint256 expected;
@@ -326,9 +327,9 @@ contract ZenoBatchedDecider {
             uint256[] calldata acc = accs[i];
             // E and W after removing the blinding r·H.
             (c[0].comms[2 * i], c[0].comms[2 * i + 1]) =
-                _addMul(acc[0], acc[1], key[17], _neg(key[18]), run.blinds[2 * i + 1]);
+                ZenoBn254.addMul(acc[0], acc[1], key[17], ZenoBn254.neg(key[18]), run.blinds[2 * i + 1]);
             (c[1].comms[2 * i], c[1].comms[2 * i + 1]) =
-                _addMul(acc[3], acc[4], key[17], _neg(key[18]), run.blinds[2 * i]);
+                ZenoBn254.addMul(acc[3], acc[4], key[17], ZenoBn254.neg(key[18]), run.blinds[2 * i]);
             c[0].values[i] = run.claims[4 * i + 3];
             c[1].values[i] = run.v[2 * i + 1];
             // val_A, val_B, val_C, row, col, e_row, e_col, h1_row, h1_col.
@@ -379,33 +380,9 @@ contract ZenoBatchedDecider {
             uint256 r = _challenge(s);
             point[i] = r;
             uint256 e1 = addmod(claim, R - m[0] % R, R);
-            claim = degree == 2 ? _interp2(m[0], e1, m[1], r) : _interp3(m[0], e1, m[1], m[2], r);
+            claim = degree == 2 ? ZenoField.interp2(m[0], e1, m[1], r, R, INV2) : ZenoField.interp3(m[0], e1, m[1], m[2], r, R, INV2, INV6);
         }
         return (claim, point);
-    }
-
-    function _interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r) private pure returns (uint256) {
-        uint256 r1 = addmod(r, R - 1, R);
-        uint256 r2 = addmod(r, R - 2, R);
-        return addmod(
-            mulmod(mulmod(p0, INV2, R), mulmod(r1, r2, R), R),
-            addmod(R - mulmod(p1, mulmod(r, r2, R), R), mulmod(mulmod(p2, INV2, R), mulmod(r, r1, R), R), R),
-            R
-        );
-    }
-
-    function _interp3(uint256 p0, uint256 p1, uint256 p2, uint256 p3, uint256 r)
-        private
-        pure
-        returns (uint256)
-    {
-        uint256 r1 = addmod(r, R - 1, R);
-        uint256 r2 = addmod(r, R - 2, R);
-        uint256 r3 = addmod(r, R - 3, R);
-        uint256 acc = mulmod(p0, R - mulmod(mulmod(mulmod(r1, r2, R), r3, R), INV6, R), R);
-        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, R), r3, R), INV2, R), R), R);
-        acc = addmod(acc, mulmod(p2, R - mulmod(mulmod(mulmod(r, r1, R), r3, R), INV2, R), R), R);
-        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, R), r2, R), INV6, R), R), R);
     }
 
     struct Claim {
@@ -444,18 +421,18 @@ contract ZenoBatchedDecider {
         b.g = _challenge(s);
         b.g2 = mulmod(b.g, b.g, R);
         for (uint256 j = 0; j < c.length; ++j) _accumulate(s, b, c[j]);
-        (s.lx, s.ly) = _addMul(
+        (s.lx, s.ly) = ZenoBn254.addMul(
             s.lx,
             s.ly,
             1,
             Q - 2,
             addmod(b.bPos, addmod(mulmod(b.g, b.bNeg, R), mulmod(b.g2, b.bSq, R), R), R)
         );
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[0], pi[1], b.r);
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[2], pi[3], R - mulmod(b.g, b.r, R));
-        (s.lx, s.ly) = _addMul(s.lx, s.ly, pi[4], pi[5], mulmod(b.g2, mulmod(b.r, b.r, R), R));
-        (s.rx, s.ry) = _addMul(pi[0], pi[1], pi[2], pi[3], b.g);
-        (s.rx, s.ry) = _addMul(s.rx, s.ry, pi[4], pi[5], b.g2);
+        (s.lx, s.ly) = ZenoBn254.addMul(s.lx, s.ly, pi[0], pi[1], b.r);
+        (s.lx, s.ly) = ZenoBn254.addMul(s.lx, s.ly, pi[2], pi[3], R - mulmod(b.g, b.r, R));
+        (s.lx, s.ly) = ZenoBn254.addMul(s.lx, s.ly, pi[4], pi[5], mulmod(b.g2, mulmod(b.r, b.r, R), R));
+        (s.rx, s.ry) = ZenoBn254.addMul(pi[0], pi[1], pi[2], pi[3], b.g);
+        (s.rx, s.ry) = ZenoBn254.addMul(s.rx, s.ry, pi[4], pi[5], b.g2);
     }
 
     function _claimHead(State memory s, Claim memory c) private pure {
@@ -497,14 +474,14 @@ contract ZenoBatchedDecider {
         {
             uint256 coeff = mulmod(b.d, addmod(1, b.g, R), R);
             for (uint256 i = 0; 2 * i < c.comms.length; ++i) {
-                (s.lx, s.ly) = _addMul(s.lx, s.ly, c.comms[2 * i], c.comms[2 * i + 1], coeff);
+                (s.lx, s.ly) = ZenoBn254.addMul(s.lx, s.ly, c.comms[2 * i], c.comms[2 * i + 1], coeff);
                 coeff = mulmod(coeff, c.q, R);
             }
         }
         uint256 weight = addmod(addmod(1, b.g, R), b.g2, R);
         for (uint256 i = 0; i < c.yPos.length; ++i) {
             if (i > 0) {
-                (s.lx, s.ly) = _addMul(
+                (s.lx, s.ly) = ZenoBn254.addMul(
                     s.lx, s.ly, c.folded[2 * (i - 1)], c.folded[2 * i - 1], mulmod(weight, b.d, R)
                 );
                 b.bSq = addmod(b.bSq, mulmod(b.d, c.ySq[i - 1], R), R);
@@ -518,18 +495,6 @@ contract ZenoBatchedDecider {
     // ------------------------------------------------------------------
     // Multilinear helpers, transcript and BN254 arithmetic
     // ------------------------------------------------------------------
-
-    function _eqPoints(uint256[] memory a, uint256[] memory b) private pure returns (uint256 acc) {
-        acc = 1;
-        for (uint256 i = 0; i < a.length; ++i) {
-            uint256 term = addmod(
-                mulmod(a[i], b[i], R),
-                mulmod(addmod(1, R - a[i], R), addmod(1, R - b[i], R), R),
-                R
-            );
-            acc = mulmod(acc, term, R);
-        }
-    }
 
     /// @dev `Σ_i IO_i·eq(point, i)` for `IO = (u, x…)`, with an `eq` table
     /// over the low variables only.
@@ -606,30 +571,4 @@ contract ZenoBatchedDecider {
         for (uint256 i = 0; i < n; ++i) out[i] = _challenge(s);
     }
 
-    function _neg(uint256 y) private pure returns (uint256) {
-        return y == 0 ? 0 : Q - y;
-    }
-
-    function _addMul(uint256 ax, uint256 ay, uint256 bx, uint256 by, uint256 k)
-        private
-        view
-        returns (uint256, uint256)
-    {
-        uint256[4] memory buf;
-        bool ok;
-        buf[0] = bx;
-        buf[1] = by;
-        buf[2] = k;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x07, buf, 0x60, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        buf[2] = ax;
-        buf[3] = ay;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x06, buf, 0x80, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        return (buf[0], buf[1]);
-    }
 }

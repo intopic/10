@@ -23,6 +23,7 @@ ark-groth16 = { version = "0.5", default-features = false, optional = true }
 ark-snark = { version = "0.5", default-features = false, optional = true }
 sha2.workspace = true
 sha3.workspace = true
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
@@ -35,6 +36,7 @@ default = ["parallel", "cli", "batch-affine-msm"]
 # The prover's commitments with batched affine additions (llull-folder::msm).
 batch-affine-msm = ["llull-folder/batch-affine-msm"]
 parallel = [
+    "dep:rayon",
     "llull-folder/parallel",
     "decider-zk/parallel",
     "zeno-ivc/parallel",

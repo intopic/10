@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
+import {ZenoBn254} from "./lib/ZenoBn254.sol";
+
 /// @title ZenoLlullVerifier — on-chain folding verifier (BN254)
 /// @notice Each call to `verifyFoldedProof` folds one step instance into a
 /// constant-size accumulator `U = (comm_E, u, comm_W, x)` with exactly two
@@ -50,15 +52,6 @@ contract ZenoLlullVerifier {
     /// Modulus of the BN254 base field.
     uint256 internal constant Q =
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
-    // Generator of G2, in the precompile's (imaginary, real) coordinate order.
-    uint256 internal constant G2_X_IM =
-        11559732032986387107991004021392285783925812861821192530917403151452391805634;
-    uint256 internal constant G2_X_RE =
-        10857046999023057135944570762232829481370756359578518086990519993285655852781;
-    uint256 internal constant G2_Y_IM =
-        4082367875863433681332203403145435568316851327593401208105741076214120093531;
-    uint256 internal constant G2_Y_RE =
-        8495653923123431417604973247489272438418190587263600148770280649306958101930;
 
     struct Session {
         address prover;
@@ -101,7 +94,6 @@ contract ZenoLlullVerifier {
     error MalformedProof();
     error ScalarOutOfRange();
     error StateMismatch();
-    error InvalidPoint();
     error TransferFailed();
     error UnknownDeciderKey();
     error InvalidDeciderProof();
@@ -173,8 +165,8 @@ contract ZenoLlullVerifier {
         ) & CHALLENGE_MASK;
 
         // Exactly two scalar multiplications: r·comm_W' and r·comm_T.
-        (s.wx, s.wy) = _addMul(s.wx, s.wy, pts[0], pts[1], r);
-        (s.ex, s.ey) = _addMul(s.ex, s.ey, pts[2], pts[3], r);
+        (s.wx, s.wy) = ZenoBn254.addMul(s.wx, s.wy, pts[0], pts[1], r);
+        (s.ex, s.ey) = ZenoBn254.addMul(s.ex, s.ey, pts[2], pts[3], r);
         s.u = addmod(s.u, r, R);
         for (uint256 i = 0; i < 2 * k; ++i) {
             s.x[i] = addmod(x[i], mulmod(r, publicInputs[i], R), R);
@@ -220,8 +212,8 @@ contract ZenoLlullVerifier {
                     )
                 )
             ) & CHALLENGE_MASK;
-            (a[3], a[4]) = _addMul(a[3], a[4], steps[at], steps[at + 1], r);
-            (a[0], a[1]) = _addMul(a[0], a[1], steps[at + 2], steps[at + 3], r);
+            (a[3], a[4]) = ZenoBn254.addMul(a[3], a[4], steps[at], steps[at + 1], r);
+            (a[0], a[1]) = ZenoBn254.addMul(a[0], a[1], steps[at + 2], steps[at + 3], r);
             a[2] = addmod(a[2], r, R);
             for (uint256 i = 0; i < 2 * k; ++i) {
                 x[i] = addmod(x[i], mulmod(r, steps[at + 4 + i], R), R);
@@ -302,9 +294,9 @@ contract ZenoLlullVerifier {
         ) & CHALLENGE_MASK;
 
         // comm_E ← comm_E + r·comm_T + r²·comm_E_mask
-        (uint256 ex, uint256 ey) = _addMul(s.ex, s.ey, m[5 + n], m[6 + n], r);
-        (s.ex, s.ey) = _addMul(ex, ey, m[0], m[1], mulmod(r, r, R));
-        (s.wx, s.wy) = _addMul(s.wx, s.wy, m[3], m[4], r);
+        (uint256 ex, uint256 ey) = ZenoBn254.addMul(s.ex, s.ey, m[5 + n], m[6 + n], r);
+        (s.ex, s.ey) = ZenoBn254.addMul(ex, ey, m[0], m[1], mulmod(r, r, R));
+        (s.wx, s.wy) = ZenoBn254.addMul(s.wx, s.wy, m[3], m[4], r);
         s.u = addmod(s.u, mulmod(r, m[2], R), R);
         for (uint256 i = 0; i < n; ++i) {
             if (m[5 + i] >= R) revert ScalarOutOfRange();
@@ -367,33 +359,4 @@ contract ZenoLlullVerifier {
     // BN254 arithmetic through the EIP-196 precompiles
     // ------------------------------------------------------------------
 
-    /// @dev Negation of a G1 point's y-coordinate; the identity stays `(0, 0)`.
-    function _neg(uint256 y) internal pure returns (uint256) {
-        return y == 0 ? 0 : Q - y;
-    }
-
-    /// @dev Returns `(ax, ay) + s·(bx, by)`. The precompiles reject points
-    /// that are not on the curve; the identity is encoded as `(0, 0)`.
-    function _addMul(uint256 ax, uint256 ay, uint256 bx, uint256 by, uint256 s)
-        internal
-        view
-        returns (uint256, uint256)
-    {
-        uint256[4] memory buf;
-        bool ok;
-        buf[0] = bx;
-        buf[1] = by;
-        buf[2] = s;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x07, buf, 0x60, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        buf[2] = ax;
-        buf[3] = ay;
-        assembly ("memory-safe") {
-            ok := staticcall(gas(), 0x06, buf, 0x80, buf, 0x40)
-        }
-        if (!ok) revert InvalidPoint();
-        return (buf[0], buf[1]);
-    }
 }

@@ -6,7 +6,7 @@
 //! Circom orders wires as `1, outputs, public inputs, private inputs, ...`.
 
 use ark_ff::{BigInteger, PrimeField};
-use std::fmt;
+use std::{fmt, sync::Arc};
 use zeno_ivc::{IvcError, R1csStep};
 
 /// Errors of the SDK layer.
@@ -196,9 +196,9 @@ pub struct CircomR1cs<F: PrimeField> {
     pub num_outputs: usize,
     pub num_public_inputs: usize,
     pub num_private_inputs: usize,
-    pub a: Rows<F>,
-    pub b: Rows<F>,
-    pub c: Rows<F>,
+    pub a: Arc<Rows<F>>,
+    pub b: Arc<Rows<F>>,
+    pub c: Arc<Rows<F>>,
 }
 
 impl<F: PrimeField> CircomR1cs<F> {
@@ -274,13 +274,14 @@ impl<F: PrimeField> CircomR1cs<F> {
             num_outputs,
             num_public_inputs,
             num_private_inputs,
-            a,
-            b,
-            c,
+            a: Arc::new(a),
+            b: Arc::new(b),
+            c: Arc::new(c),
         })
     }
 
     /// The IVC step function for this circuit with the given wire values.
+    /// The matrices are shared with the step, not copied.
     pub fn step(&self, assignment: Option<Vec<F>>) -> R1csStep<F> {
         let k = self.num_outputs;
         R1csStep {

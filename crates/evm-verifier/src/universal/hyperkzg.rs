@@ -24,6 +24,8 @@ use ark_bn254::{Fr, G1Projective as G1};
 use ark_ec::PrimeGroup;
 use ark_ff::{Field, One, Zero};
 use llull_folder::CommitmentKey;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 /// A joint opening proof for several evaluation claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,15 +60,40 @@ fn powers(base: Fr, n: usize) -> Vec<Fr> {
     out
 }
 
+/// Index ranges handled by one task when the `parallel` feature is on.
+const CHUNK: usize = 1 << 12;
+
+/// `Σ_k coeffs[k]·polys[k]`, entry by entry (shorter polynomials are
+/// zero-padded).
 fn combine(polys: &[&[Fr]], coeffs: &[Fr]) -> Vec<Fr> {
     let len = polys.iter().map(|p| p.len()).max().unwrap_or(0);
     let mut out = alloc::vec![Fr::zero(); len];
-    for (p, c) in polys.iter().zip(coeffs) {
-        for (o, v) in out.iter_mut().zip(p.iter()) {
-            *o += *c * v;
+    let fill = |(c, chunk): (usize, &mut [Fr])| {
+        let start = c * CHUNK;
+        for (p, coeff) in polys.iter().zip(coeffs) {
+            if start < p.len() {
+                for (o, v) in chunk.iter_mut().zip(&p[start..]) {
+                    *o += *coeff * v;
+                }
+            }
         }
-    }
+    };
+    #[cfg(feature = "parallel")]
+    out.par_chunks_mut(CHUNK).enumerate().for_each(fill);
+    #[cfg(not(feature = "parallel"))]
+    out.chunks_mut(CHUNK).enumerate().for_each(fill);
     out
+}
+
+/// One folding step: `next[j] = prev[2j] + u·(prev[2j+1] − prev[2j])`.
+fn fold_layer(prev: &[Fr], u: Fr) -> Vec<Fr> {
+    let half = prev.len() / 2;
+    let at = |j: usize| prev[2 * j] + u * (prev[2 * j + 1] - prev[2 * j]);
+    #[cfg(feature = "parallel")]
+    if half >= CHUNK {
+        return (0..half).into_par_iter().map(at).collect();
+    }
+    (0..half).map(at).collect()
 }
 
 /// Proves all `claims` jointly: every folded polynomial of every claim is
@@ -89,9 +116,7 @@ pub fn prove(tr: &mut KeccakTranscript, ck: &CommitmentKey<G1>, claims: &[Claim]
         let mut layers: Vec<Vec<Fr>> = alloc::vec![combine(claim.polys, &q)];
         for u_i in &u[..ell - 1] {
             let prev = layers.last().expect("non-empty");
-            let next = (0..prev.len() / 2)
-                .map(|j| prev[2 * j] + *u_i * (prev[2 * j + 1] - prev[2 * j]))
-                .collect();
+            let next = fold_layer(prev, *u_i);
             layers.push(next);
         }
         debug_assert_eq!(
@@ -117,11 +142,18 @@ pub fn prove(tr: &mut KeccakTranscript, ck: &CommitmentKey<G1>, claims: &[Claim]
 
     // One evaluation point for everything.
     let r = tr.challenge();
+    // Every layer of every claim is evaluated independently.
     let evals = |z: Fr, skip: usize| -> Vec<Vec<Fr>> {
-        all_layers
-            .iter()
-            .map(|layers| layers[skip..].iter().map(|p| kzg::evaluate(p, z)).collect())
-            .collect()
+        let claim = |layers: &Vec<Vec<Fr>>| -> Vec<Fr> {
+            #[cfg(feature = "parallel")]
+            return layers[skip..]
+                .par_iter()
+                .map(|p| kzg::evaluate(p, z))
+                .collect();
+            #[cfg(not(feature = "parallel"))]
+            layers[skip..].iter().map(|p| kzg::evaluate(p, z)).collect()
+        };
+        all_layers.iter().map(claim).collect()
     };
     let (y_pos, y_neg, y_sq) = (evals(r, 0), evals(-r, 0), evals(r * r, 1));
     for j in 0..claims.len() {

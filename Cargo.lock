@@ -818,6 +818,7 @@ dependencies = [
  "core-r1cs",
  "decider-zk",
  "llull-folder",
+ "rayon",
  "sha2",
  "sha3",
  "zeno-ivc",

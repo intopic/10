@@ -1,7 +1,7 @@
 //! Ready-made step functions.
 
 use crate::nova_ivc_circuit::StepCircuit;
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use ark_ff::PrimeField;
 use ark_r1cs_std::{
     alloc::AllocVar,
@@ -78,9 +78,11 @@ impl<F: PrimeField> StepCircuit<F> for CubicStep {
 #[derive(Clone, Debug)]
 pub struct R1csStep<F: PrimeField> {
     pub num_wires: usize,
-    pub a: Vec<Vec<(F, usize)>>,
-    pub b: Vec<Vec<(F, usize)>>,
-    pub c: Vec<Vec<(F, usize)>>,
+    /// The matrices are shared: a step is built for every witness, and the
+    /// constraints do not change between steps.
+    pub a: Arc<Vec<Vec<(F, usize)>>>,
+    pub b: Arc<Vec<Vec<(F, usize)>>>,
+    pub c: Arc<Vec<Vec<(F, usize)>>>,
     pub z_in_wires: Vec<usize>,
     pub z_out_wires: Vec<usize>,
     /// Wire values for this step; `None` only when deriving parameters.
