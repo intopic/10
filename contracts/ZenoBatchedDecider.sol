@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {ZenoBn254, ZenoField} from "./lib/ZenoBn254.sol";
+import {ZenoBn254, ZenoFr} from "./lib/ZenoBn254.sol";
 
 /// @title ZenoBatchedDecider — one universal decider proof for several circuits
 /// @notice Verifies, in one argument, that several KZG-committed relaxed R1CS
@@ -16,10 +16,6 @@ contract ZenoBatchedDecider {
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
     uint256 internal constant Q =
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
-    uint256 internal constant INV2 =
-        10944121435919637611123202872628637544274182200208017171849102093287904247809;
-    uint256 internal constant INV6 =
-        18240202393199396018538671454381062573790303667013361953081836822146507079681;
 
     bytes32 internal constant DOMAIN = keccak256("zeno-llull/universal-batch/v1");
 
@@ -149,7 +145,7 @@ contract ZenoBatchedDecider {
             rhs = addmod(rhs, mulmod(a, term, R), R);
             a = mulmod(a, alpha, R);
         }
-        if (claim != mulmod(ZenoField.eqPoints(tau, run.rx, R), rhs, R)) revert InvalidProof(1);
+        if (claim != mulmod(ZenoFr.eqPoints(tau, run.rx), rhs, R)) revert InvalidProof(1);
         _absorb(s, run.claims);
     }
 
@@ -226,7 +222,7 @@ contract ZenoBatchedDecider {
         uint256 claim;
         (claim, run.rk) = _sumcheck(s, start, run.logK, 3);
         run.evalsK = _take(s, 9 * s.n);
-        uint256 eq = ZenoField.eqPoints(tauK, run.rk, R);
+        uint256 eq = ZenoFr.eqPoints(tauK, run.rk);
         uint256 expected;
         a = 1;
         for (uint256 i = 0; i < s.n; ++i) {
@@ -291,8 +287,8 @@ contract ZenoBatchedDecider {
         uint256 claim;
         (claim, r) = _sumcheck(s, start, log, 3);
         // The evaluations follow in the proof; peek at them.
-        uint256 eqTau = ZenoField.eqPoints(tau, r, R);
-        uint256 eqPt = ZenoField.eqPoints(point, r, R);
+        uint256 eqTau = ZenoFr.eqPoints(tau, r);
+        uint256 eqPt = ZenoFr.eqPoints(point, r);
         uint256 index;
         for (uint256 i = 0; i < log; ++i) index = addmod(addmod(index, index, R), r[i], R);
         uint256 expected;
@@ -380,7 +376,7 @@ contract ZenoBatchedDecider {
             uint256 r = _challenge(s);
             point[i] = r;
             uint256 e1 = addmod(claim, R - m[0] % R, R);
-            claim = degree == 2 ? ZenoField.interp2(m[0], e1, m[1], r, R, INV2) : ZenoField.interp3(m[0], e1, m[1], m[2], r, R, INV2, INV6);
+            claim = degree == 2 ? ZenoFr.interp2(m[0], e1, m[1], r) : ZenoFr.interp3(m[0], e1, m[1], m[2], r);
         }
         return (claim, point);
     }

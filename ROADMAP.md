@@ -135,9 +135,10 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
   - `CircomR1cs::step` i ndan matricat me `Arc` në vend që t'i kopjojë në çdo hap
   - ndihmës të përbashkët: `core_r1cs::mle` (`eq_table`, `padded`, `padded_column`, `log2_ceil`,
     `inner_product`) në vend të 2–3 kopjeve; `contracts/lib/ZenoBn254.sol` (`ZenoBn254`: `addMul`,
-    `neg`, çiftëzimi, konstantet G2; `ZenoField`: interpolimet dhe `eq` me modul parametër) për të
-    katër kontratat. Kosto: modulet si parametra shtojnë ~0.5% gaz (`finalizeRecursive` 3 644 797 →
-    3 663 215; `finalizeUniversal` 2^16 1 879 283 → 1 889 853)
+    `neg`, çiftëzimi, konstantet G2; `ZenoFr` dhe `ZenoFq`: interpolimet dhe `eq` me modul fiks, një
+    kopje për secilën fushë, në të njëjtin skedar) për të katër kontratat. Me modulin si parametër
+    gazi rritej ~0.5%; me modul konstant është si para bibliotekës: `finalizeRecursive` **3 644 797**,
+    `finalizeUniversal` 2^16 **1 876 462**
 - [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
       qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
 - [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të

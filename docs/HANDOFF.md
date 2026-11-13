@@ -38,7 +38,7 @@ kontrata verifikuese në EVM.
 | `crates/zeno-ivc/src/gadgets` | Gadget-e me peshë të ulët: pika afine, shumëzim skalar ELM, MSM me bazë fikse, Poseidon me gjendje të rrafshuar |
 | `crates/decider-zk` | Maskimi zero-knowledge, sum-check, IPA, prova e shkurtër transparente `CompressedIvcProof`, CLI `zeno-decider` |
 | `crates/evm-verifier` | Anën e provuesit për EVM: transkript Keccak, kodim ABI, KZG dhe ngarkues `.ptau`, **vendimtari universal** (`src/universal/`), **vendimtari rekursiv** (`src/recursive.rs`) |
-| `contracts/lib/` | `ZenoBn254.sol`: aritmetika BN254 përmes precompile-ve dhe ndihmësit e sum-check-ut, të përbashkët për të gjitha kontratat |
+| `contracts/lib/` | `ZenoBn254.sol`: aritmetika BN254 përmes precompile-ve (`ZenoBn254`) dhe ndihmësit e sum-check-ut me modul fiks (`ZenoFr`, `ZenoFq`), të përbashkët për të gjitha kontratat |
 | `contracts/` | `ZenoLlullVerifier.sol` (sesione, palosje në zinxhir, tarifë), `ZenoUniversalDecider.sol` (verifikues i vendimtarit universal, edhe `verifyDeferred`), `ZenoBatchedDecider.sol` (një provë universale për disa qarqe) dhe `ZenoRecursiveVerifier.sol` (`finalizeRecursive`, me matricat CycleFold në `ZenoCycleFoldShape.sol`, të gjeneruar), me teste në EVM lokale |
 | `crates/sdk-bindings`, `sdk/wasm` | Hyrje nga Circom (`.r1cs` / `.wtns`), API WebAssembly, paketa `@zenollull/wasm-sdk` (me variant me shumë fije) |
 | `crates/mobile-ffi`, `sdk/native`, `sdk/android` | SDK native me UniFFI: lidhje Swift, Kotlin, Python; paketim AAR dhe XCFramework |
@@ -102,7 +102,7 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 943 kufizime (936 variabla) / 66 791 kufizime, 468k elemente jo-zero |
 | Qarku mbyllës | 136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike; 28 s provim, 1.94 GB memorie |
 | Provuesi i `finalizeRecursive` (pas hapave) | rreth 23 s (31 s para paralelizimit të vendimtarit); verifikim native 14 ms |
-| `finalizeRecursive` | **3.66 M gas** (3.03 M ekzekutim + 39 KB calldata), i njëjtë për çdo numër hapash; një provë universale e grupuar për qarkun primar dhe atë mbyllës; matricat CycleFold nga struktura uniforme (230 rekorde) |
+| `finalizeRecursive` | **3.64 M gas** (3.01 M ekzekutim + 39 KB calldata), i njëjtë për çdo numër hapash; një provë universale e grupuar për qarkun primar dhe atë mbyllës; matricat CycleFold nga struktura uniforme (230 rekorde) |
 
 Gazi i `finalizeUniversal` rritet logaritmikisht: rreth 89k gas dhe 1.25 KB
 për çdo dyfishim të qarkut. Matja për 65 536 kufizime është bërë mbi skedarin
@@ -117,7 +117,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 | Koha < 50 ms për hap në 2^16 | **e pa arritur** në 4 vCPU; pronari e ka pranuar vlerën aktuale |
 | "4 000 kufizime për hap" | **e pa arritur** (11 217); pronari e ka pranuar |
 | Provë < 4 KB | vetëm në mënyrën Groth16 të zhvillimit; mënyrat e tjera 6.7–21.6 KB |
-| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 3.66 M (mënyra D, për çdo N) |
+| EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 3.64 M (mënyra D, për çdo N) |
 
 ## 7. Çfarë duhet ditur para se të prekësh kodin
 
@@ -193,7 +193,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 
 ## 8. Çfarë nuk është bërë
 
-1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 3.66 M: 3.03 M
+1. **Ulje e mëtejshme e gazit të `finalizeRecursive`** (sot 3.64 M: 3.01 M
    ekzekutim + 39 KB calldata, nga të cilat vendimtari i grupuar rreth 2.2 M). Dy
    provat universale janë bashkuar në një dhe matricat CycleFold vlerësohen
    nga struktura uniforme. Qarku mbyllës mbetet mbi 2^19 elemente jo-zero
@@ -228,7 +228,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
    çelësi privat i licencave të shitësit nuk ekzistojnë ende; mjeti
    `zeno-license keygen` e gjeneron të dytin. Çelësi publik përkatës duhet
    dhënë si `ZENO_VENDOR_PUBLIC_KEY` kur ndërtohen paketat e lëshimit.
-5. **Zinxhiri i synuar**: mënyra D kushton 3.66 M gas, i njëjtë për çdo N.
+5. **Zinxhiri i synuar**: mënyra D kushton 3.64 M gas, i njëjtë për çdo N.
    Mënyra B kushton 0.8–1.9 M për vendimin final plus rreth 23k gas për çdo
    hap, prandaj mënyra D del më e lirë kur N kalon rreth 75–120 hapa. Të dyja
    janë praktike kryesisht në L2.

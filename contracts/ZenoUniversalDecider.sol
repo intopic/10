@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {ZenoBn254, ZenoField} from "./lib/ZenoBn254.sol";
+import {ZenoBn254, ZenoFr} from "./lib/ZenoBn254.sol";
 
 /// @title ZenoUniversalDecider — on-chain verifier of the universal decider
 /// @notice Verifies that a KZG-committed relaxed R1CS accumulator is
@@ -22,10 +22,6 @@ contract ZenoUniversalDecider {
     /// Modulus of the BN254 base field.
     uint256 internal constant Q =
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
-    uint256 internal constant INV2 =
-        10944121435919637611123202872628637544274182200208017171849102093287904247809;
-    uint256 internal constant INV6 =
-        18240202393199396018538671454381062573790303667013361953081836822146507079681;
 
     bytes32 internal constant DOMAIN = keccak256("zeno-llull/universal-decider/v1");
 
@@ -123,7 +119,7 @@ contract ZenoUniversalDecider {
                 R - addmod(mulmod(acc[2], claims[2], R), claims[3], R),
                 R
             );
-            if (claim != mulmod(ZenoField.eqPoints(tau, rx, R), rhs, R)) revert InvalidProof(1);
+            if (claim != mulmod(ZenoFr.eqPoints(tau, rx), rhs, R)) revert InvalidProof(1);
         }
         _absorb(s, claims);
 
@@ -178,7 +174,7 @@ contract ZenoUniversalDecider {
                 addmod(mulmod(rho, evalsK[1], R), mulmod(mulmod(rho, rho, R), evalsK[2], R), R),
                 R
             );
-            uint256 eq = ZenoField.eqPoints(tauK, rk, R);
+            uint256 eq = ZenoFr.eqPoints(tauK, rk);
             uint256 expected = mulmod(mulmod(valRho, evalsK[5], R), evalsK[6], R);
             expected = addmod(expected, mulmod(delta, evalsK[7], R), R);
             expected = addmod(expected, mulmod(d2, evalsK[8], R), R);
@@ -257,8 +253,8 @@ contract ZenoUniversalDecider {
         for (uint256 i = 0; i < log; ++i) {
             index = addmod(addmod(index, index, R), r[i], R);
         }
-        uint256 term = _lookupTerm(s, evals[0], index, ZenoField.eqPoints(point, r, R), evals[1]);
-        uint256 expected = addmod(evals[0], mulmod(delta, mulmod(ZenoField.eqPoints(tau, r, R), term, R), R), R);
+        uint256 term = _lookupTerm(s, evals[0], index, ZenoFr.eqPoints(point, r), evals[1]);
+        uint256 expected = addmod(evals[0], mulmod(delta, mulmod(ZenoFr.eqPoints(tau, r), term, R), R), R);
         if (claim != expected) revert InvalidProof(step);
         _absorb(s, evals);
     }
@@ -278,7 +274,7 @@ contract ZenoUniversalDecider {
             point[i] = r;
             // p(0) = m[0], p(1) = claim − m[0], p(2) = m[1], (p(3) = m[2]).
             uint256 e1 = addmod(claim, R - m[0] % R, R);
-            claim = degree == 2 ? ZenoField.interp2(m[0], e1, m[1], r, R, INV2) : ZenoField.interp3(m[0], e1, m[1], m[2], r, R, INV2, INV6);
+            claim = degree == 2 ? ZenoFr.interp2(m[0], e1, m[1], r) : ZenoFr.interp3(m[0], e1, m[1], m[2], r);
         }
         return (claim, point);
     }

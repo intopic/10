@@ -73,53 +73,105 @@ library ZenoBn254 {
     }
 }
 
-/// @title ZenoField — sum-check helpers over a prime field of modulus `m`
-/// @notice Used over the scalar field of BN254 (the universal deciders) and
-/// over its base field (the CycleFold argument).
-library ZenoField {
+// The two libraries below are the same code over the two fields of BN254.
+// They are kept as two copies in this one file on purpose: with the modulus
+// as a parameter instead of a constant, every verification costs about 0.5%
+// more gas.
+
+/// @title ZenoFr — sum-check helpers over the scalar field of BN254 (the universal deciders)
+/// @notice The modulus is a compile-time constant, so `mulmod`/`addmod` take
+/// it from the code instead of the stack.
+library ZenoFr {
+    uint256 internal constant M =
+        21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    /// `1/2` and `1/6` modulo `M`.
+    uint256 internal constant INV2 =
+        10944121435919637611123202872628637544274182200208017171849102093287904247809;
+    uint256 internal constant INV6 =
+        18240202393199396018538671454381062573790303667013361953081836822146507079681;
+
     /// @dev `p(r)` for the quadratic with `p(0), p(1), p(2) = p0, p1, p2`:
-    /// `p0·(r−1)(r−2)/2 − p1·r(r−2) + p2·r(r−1)/2`. `inv2 = 1/2 mod m`.
-    function interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r, uint256 m, uint256 inv2)
+    /// `p0·(r−1)(r−2)/2 − p1·r(r−2) + p2·r(r−1)/2`.
+    function interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r) internal pure returns (uint256) {
+        uint256 r1 = addmod(r, M - 1, M);
+        uint256 r2 = addmod(r, M - 2, M);
+        return addmod(
+            mulmod(mulmod(p0, INV2, M), mulmod(r1, r2, M), M),
+            addmod(M - mulmod(p1, mulmod(r, r2, M), M), mulmod(mulmod(p2, INV2, M), mulmod(r, r1, M), M), M),
+            M
+        );
+    }
+
+    /// @dev `p(r)` for the cubic with values `p0…p3` at `0…3` (Lagrange basis).
+    function interp3(uint256 p0, uint256 p1, uint256 p2, uint256 p3, uint256 r)
         internal
         pure
         returns (uint256)
     {
-        uint256 r1 = addmod(r, m - 1, m);
-        uint256 r2 = addmod(r, m - 2, m);
-        return addmod(
-            mulmod(mulmod(p0, inv2, m), mulmod(r1, r2, m), m),
-            addmod(m - mulmod(p1, mulmod(r, r2, m), m), mulmod(mulmod(p2, inv2, m), mulmod(r, r1, m), m), m),
-            m
-        );
-    }
-
-    /// @dev `p(r)` for the cubic with values `p0…p3` at `0…3` (Lagrange
-    /// basis). `inv2 = 1/2`, `inv6 = 1/6 mod m`.
-    function interp3(
-        uint256 p0,
-        uint256 p1,
-        uint256 p2,
-        uint256 p3,
-        uint256 r,
-        uint256 m,
-        uint256 inv2,
-        uint256 inv6
-    ) internal pure returns (uint256) {
-        uint256 r1 = addmod(r, m - 1, m);
-        uint256 r2 = addmod(r, m - 2, m);
-        uint256 r3 = addmod(r, m - 3, m);
-        uint256 acc = mulmod(p0, m - mulmod(mulmod(mulmod(r1, r2, m), r3, m), inv6, m), m);
-        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, m), r3, m), inv2, m), m), m);
-        acc = addmod(acc, mulmod(p2, m - mulmod(mulmod(mulmod(r, r1, m), r3, m), inv2, m), m), m);
-        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, m), r2, m), inv6, m), m), m);
+        uint256 r1 = addmod(r, M - 1, M);
+        uint256 r2 = addmod(r, M - 2, M);
+        uint256 r3 = addmod(r, M - 3, M);
+        uint256 acc = mulmod(p0, M - mulmod(mulmod(mulmod(r1, r2, M), r3, M), INV6, M), M);
+        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, M), r3, M), INV2, M), M), M);
+        acc = addmod(acc, mulmod(p2, M - mulmod(mulmod(mulmod(r, r1, M), r3, M), INV2, M), M), M);
+        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, M), r2, M), INV6, M), M), M);
     }
 
     /// @dev `eq(a, b) = Π (a_i·b_i + (1 − a_i)(1 − b_i))`.
-    function eqPoints(uint256[] memory a, uint256[] memory b, uint256 m) internal pure returns (uint256 acc) {
+    function eqPoints(uint256[] memory a, uint256[] memory b) internal pure returns (uint256 acc) {
         acc = 1;
         for (uint256 i = 0; i < a.length; ++i) {
-            uint256 term = addmod(mulmod(a[i], b[i], m), mulmod(addmod(1, m - a[i], m), addmod(1, m - b[i], m), m), m);
-            acc = mulmod(acc, term, m);
+            uint256 term = addmod(mulmod(a[i], b[i], M), mulmod(addmod(1, M - a[i], M), addmod(1, M - b[i], M), M), M);
+            acc = mulmod(acc, term, M);
+        }
+    }
+}
+
+/// @title ZenoFq — sum-check helpers over the base field of BN254 (the CycleFold argument)
+/// @notice The modulus is a compile-time constant, so `mulmod`/`addmod` take
+/// it from the code instead of the stack.
+library ZenoFq {
+    uint256 internal constant M =
+        21888242871839275222246405745257275088696311157297823662689037894645226208583;
+    /// `1/2` and `1/6` modulo `M`.
+    uint256 internal constant INV2 =
+        10944121435919637611123202872628637544348155578648911831344518947322613104292;
+    uint256 internal constant INV6 =
+        18240202393199396018538671454381062573913592631081519718907531578871021840486;
+
+    /// @dev `p(r)` for the quadratic with `p(0), p(1), p(2) = p0, p1, p2`:
+    /// `p0·(r−1)(r−2)/2 − p1·r(r−2) + p2·r(r−1)/2`.
+    function interp2(uint256 p0, uint256 p1, uint256 p2, uint256 r) internal pure returns (uint256) {
+        uint256 r1 = addmod(r, M - 1, M);
+        uint256 r2 = addmod(r, M - 2, M);
+        return addmod(
+            mulmod(mulmod(p0, INV2, M), mulmod(r1, r2, M), M),
+            addmod(M - mulmod(p1, mulmod(r, r2, M), M), mulmod(mulmod(p2, INV2, M), mulmod(r, r1, M), M), M),
+            M
+        );
+    }
+
+    /// @dev `p(r)` for the cubic with values `p0…p3` at `0…3` (Lagrange basis).
+    function interp3(uint256 p0, uint256 p1, uint256 p2, uint256 p3, uint256 r)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 r1 = addmod(r, M - 1, M);
+        uint256 r2 = addmod(r, M - 2, M);
+        uint256 r3 = addmod(r, M - 3, M);
+        uint256 acc = mulmod(p0, M - mulmod(mulmod(mulmod(r1, r2, M), r3, M), INV6, M), M);
+        acc = addmod(acc, mulmod(p1, mulmod(mulmod(mulmod(r, r2, M), r3, M), INV2, M), M), M);
+        acc = addmod(acc, mulmod(p2, M - mulmod(mulmod(mulmod(r, r1, M), r3, M), INV2, M), M), M);
+        return addmod(acc, mulmod(p3, mulmod(mulmod(mulmod(r, r1, M), r2, M), INV6, M), M), M);
+    }
+
+    /// @dev `eq(a, b) = Π (a_i·b_i + (1 − a_i)(1 − b_i))`.
+    function eqPoints(uint256[] memory a, uint256[] memory b) internal pure returns (uint256 acc) {
+        acc = 1;
+        for (uint256 i = 0; i < a.length; ++i) {
+            uint256 term = addmod(mulmod(a[i], b[i], M), mulmod(addmod(1, M - a[i], M), addmod(1, M - b[i], M), M), M);
+            acc = mulmod(acc, term, M);
         }
     }
 }

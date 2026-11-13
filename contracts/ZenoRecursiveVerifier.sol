@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
-import {ZenoBn254, ZenoField} from "./lib/ZenoBn254.sol";
+import {ZenoBn254, ZenoFq} from "./lib/ZenoBn254.sol";
 
 import {ZenoCycleFoldShape} from "./ZenoCycleFoldShape.sol";
 
@@ -43,8 +43,6 @@ contract ZenoRecursiveVerifier {
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
     uint256 internal constant INV2_Q =
         10944121435919637611123202872628637544348155578648911831344518947322613104292;
-    uint256 internal constant INV6_Q =
-        18240202393199396018538671454381062573913592631081519718907531578871021840486;
     /// `(1 + 2^255) mod q`: a row weight `s` reaches the closing circuit as
     /// the `t` with `2^255 + 2t + 1 ≡ s`.
     uint256 internal constant ODD_K =
@@ -276,7 +274,7 @@ contract ZenoRecursiveVerifier {
                 Q - addmod(mulmod(ux[0], p[pos + 2], Q), p[pos + 3], Q),
                 Q
             );
-            if (claim != mulmod(ZenoField.eqPoints(tau, out.rx, Q), rhs, Q)) revert InvalidProof(11);
+            if (claim != mulmod(ZenoFq.eqPoints(tau, out.rx), rhs, Q)) revert InvalidProof(11);
         }
         tr = _absorb(tr, abi.encodePacked(p[pos:pos + 4]));
         uint256 rho;
@@ -503,7 +501,7 @@ contract ZenoRecursiveVerifier {
             (tr, r) = _challenge(tr, Q);
             point[i] = r;
             uint256 p1 = addmod(claim, Q - m[0] % Q, Q);
-            claim = degree == 2 ? ZenoField.interp2(m[0], p1, m[1], r, Q, INV2_Q) : ZenoField.interp3(m[0], p1, m[1], m[2], r, Q, INV2_Q, INV6_Q);
+            claim = degree == 2 ? ZenoFq.interp2(m[0], p1, m[1], r) : ZenoFq.interp3(m[0], p1, m[1], m[2], r);
         }
         return (tr, claim, point);
     }
