@@ -106,6 +106,22 @@ Konstruktorët: `ZenoLlullVerifier(stepFee, decisionFee, maxFee, decider)`,
 `ZenoRecursiveVerifier(decider, stepFee, decisionFee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
 regjistrimin në kontratën tonë.
 
+**Lansimi: vetëm L2.** Tarifat e nisjes janë në `contracts/deploy/l2.json`, në
+dollarë: mënyra B `stepFee` 0 dhe `decisionFee` $0.03 (vetëm për provë, sepse
+hapat paguajnë gazin e tyre); mënyra D `decisionFee` $0.10 + `stepFee` $0.0015
+për hap; `maxFee` $50 për të dyja (D e arrin rreth 33k hapa). SDK-ja është falas
+për B dhe D; licenca me pagesë mbetet për përdorimin tregtar të mënyrës A, e
+vetmja që nuk kalon nga kontrata. `contracts/scripts/deploy.cjs` i kthen në wei
+me çmimin e ETH-it të ditës (`--eth-usd`), vendos të katër kontratat, lexon
+tarifat prapa nga zinxhiri, ia kalon pronësinë një multisig-u (`--owner`) dhe
+shkruan adresat në `contracts/deploy/deployments/<chainId>.json`. Ethereum
+mainnet refuzohet. CI e ekzekuton me `--dry-run` në një EVM lokale:
+
+```bash
+node contracts/scripts/deploy.cjs --dry-run
+RPC_URL=https://... DEPLOYER_KEY=0x... node contracts/scripts/deploy.cjs --eth-usd 3000 --owner 0xSafe...
+```
+
 **Mjeti `zeno-evm`** (`crates/zeno-evm`) është mjeti i
 prodhimit për mënyrat B dhe D: merr të njëjtët skedarë Circom si SDK-ja,
 kontrollon çdo dëshmi (vazhdimësinë e gjendjes dhe kufizimet)

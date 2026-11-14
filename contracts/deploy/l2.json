@@ -1,0 +1,15 @@
+{
+  "comment": "Launch fees on L2 (Base, Arbitrum, Optimism), in US dollars. The deploy script converts them to wei with the ETH price given at deployment (--eth-usd). Mode B charges per decision only (stepFee 0: its steps already pay their own gas); mode D charges decisionFee + stepFee x steps, never above maxFee. maxFee is fixed for ever at deployment.",
+  "universal": {
+    "contract": "ZenoLlullVerifier",
+    "stepFeeUsd": 0,
+    "decisionFeeUsd": 0.03,
+    "maxFeeUsd": 50
+  },
+  "recursive": {
+    "contract": "ZenoRecursiveVerifier",
+    "stepFeeUsd": 0.0015,
+    "decisionFeeUsd": 0.10,
+    "maxFeeUsd": 50
+  }
+}

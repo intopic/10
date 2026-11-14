@@ -117,6 +117,8 @@ jobs:
       - run: cargo build --release -p evm-verifier -p zeno-evm
       - run: npm ci
         working-directory: contracts
+      - name: L2 deployment with the launch fees (dry run, in-process EVM)
+        run: node contracts/scripts/deploy.cjs --dry-run | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Cache the public Powers-of-Tau file (PSE PPoT, 2^18 powers)
         id: ptau
         uses: actions/cache@v4
