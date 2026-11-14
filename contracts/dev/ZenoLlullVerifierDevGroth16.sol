@@ -21,8 +21,8 @@ contract ZenoLlullVerifierDevGroth16 is ZenoLlullVerifier {
 
     error CircuitAlreadyRegistered();
 
-    constructor(uint256 fee, uint256 maxFee_, IZenoUniversalDecider decider)
-        ZenoLlullVerifier(fee, maxFee_, decider)
+    constructor(uint256 stepFee_, uint256 decisionFee_, uint256 maxFee_, IZenoUniversalDecider decider)
+        ZenoLlullVerifier(stepFee_, decisionFee_, maxFee_, decider)
     {}
 
     /// @notice Closes the session like `finalize` and verifies on-chain that

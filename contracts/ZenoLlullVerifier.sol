@@ -71,7 +71,8 @@ contract ZenoLlullVerifier is ZenoFees {
         uint256[] state;
     }
 
-    // Fee: `protocolFee` for every folded step and for every finalization.
+    // Fees: `stepFee` for every folded step, `decisionFee` for every
+    // finalization (see ZenoFees).
     uint256 public sessionCount;
     mapping(bytes32 => Session) internal sessions;
     /// The universal decider verifier contract, fixed at deployment: nobody
@@ -91,8 +92,11 @@ contract ZenoLlullVerifier is ZenoFees {
     error UnknownDeciderKey();
     error InvalidDeciderProof();
 
-    /// @param fee initial `protocolFee`; @param maxFee_ its permanent cap.
-    constructor(uint256 fee, uint256 maxFee_, IZenoUniversalDecider decider) ZenoFees(fee, maxFee_) {
+    /// @param stepFee_ fee per folded step; @param decisionFee_ fee per
+    /// finalization; @param maxFee_ the permanent cap of both.
+    constructor(uint256 stepFee_, uint256 decisionFee_, uint256 maxFee_, IZenoUniversalDecider decider)
+        ZenoFees(stepFee_, decisionFee_, maxFee_)
+    {
         if (address(decider).code.length == 0) revert UnknownDeciderKey();
         universalDecider = decider;
     }
@@ -127,7 +131,7 @@ contract ZenoLlullVerifier is ZenoFees {
         payable
         returns (bytes32 sessionId)
     {
-        _chargeFee(1);
+        _chargeSteps(1);
         if (proof.length != 160) revert MalformedProof();
         sessionId = bytes32(proof[0:32]);
         Session storage s = sessions[sessionId];
@@ -176,7 +180,7 @@ contract ZenoLlullVerifier is ZenoFees {
         uint256 stride = 4 + 2 * k;
         uint256 count = steps.length / stride;
         if (count == 0 || steps.length != count * stride) revert MalformedProof();
-        _chargeFee(count);
+        _chargeSteps(count);
 
         // Accumulator and state in memory: [ex, ey, u, wx, wy], x, state.
         uint256[5] memory a = [s.ex, s.ey, s.u, s.wx, s.wy];
@@ -257,12 +261,12 @@ contract ZenoLlullVerifier is ZenoFees {
         emit CircuitAnnounced(circuitId, msg.sender, key);
     }
 
-    /// Charges the finalization fee, then folds the mask (zero-knowledge).
+    /// Charges the decision fee, then folds the mask (zero-knowledge).
     function _foldMask(bytes32 sessionId, bytes calldata maskProof)
         internal
         returns (Session storage s)
     {
-        _chargeFee(1);
+        _chargeDecision();
         s = sessions[sessionId];
         if (s.prover != msg.sender) revert NotSessionProver();
         if (s.finalized) revert SessionClosed();

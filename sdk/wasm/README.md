@@ -53,8 +53,8 @@ const { ZenoLlullOnChainProver } = require("@zenollull/wasm-sdk");
 const p = new ZenoLlullOnChainProver(licenseKey, r1csBytes, ptauBytes, ["3"]);
 // dërgo p.openSessionCalldata() → kontrata kthen sessionId (bytes32)
 p.proveStep(wtns0); p.proveStep(wtns1);
-// dërgo p.takeCalldata(sessionId) me value = protocolFee × (hapat e marrë)
-// dërgo p.finalize(sessionId)     me value = protocolFee
+// dërgo p.takeCalldata(sessionId) me value = stepFee × (hapat e marrë)
+// dërgo p.finalize(sessionId)     me value = decisionFee
 ```
 
 `ptauBytes` është skedari i një ceremonie publike ose pjesa që i duhet qarkut

@@ -192,13 +192,13 @@ impl OnChainProver {
     }
 
     /// Calldata of `verifyFoldedProofBatch` for the pending steps (send it
-    /// with `protocolFee × pending_steps` wei); `session_id` in hex.
+    /// with `stepFee × pending_steps` wei); `session_id` in hex.
     pub fn take_calldata(&self, session_id: String) -> Result<Vec<u8>, ZenoError> {
         let session = sdk_bindings::onchain::parse_session(&session_id)?;
         Ok(self.lock().take_calldata(&session)?)
     }
 
-    /// Calldata of `finalizeUniversal` (send it with `protocolFee` wei).
+    /// Calldata of `finalizeUniversal` (send it with `decisionFee` wei).
     pub fn finalize(&self, session_id: String) -> Result<Vec<u8>, ZenoError> {
         let session = sdk_bindings::onchain::parse_session(&session_id)?;
         Ok(self.lock().finalize(&session)?)

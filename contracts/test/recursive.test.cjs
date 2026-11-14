@@ -22,7 +22,7 @@ const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const SERVER_BIN = process.env.ZENO_CLOUD_PROVER ?? path.join(ROOT, "target/release/zenollull-cloud-prover");
 const LICENSE_BIN = path.join(ROOT, "target/release/zeno-license");
 const STEPS = 3;
-const FEE = 2_000_000_000_000n; // per finalizeRecursive
+const FEE = 2_000_000_000_000n; // decisionFee: per finalizeRecursive
 const MAX_FEE = 10n * FEE;
 
 function compile() {
@@ -127,7 +127,7 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // ---- The honest decision --------------------------------------------------
   const shape = await call("0x" + sel["cfShapeHash()"]);
   assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
-  // The fee is exactly protocolFee.
+  // The fee is exactly decisionFee.
   for (const v of [0n, FEE - 1n, FEE + 1n]) {
     const r = await call(fx.calldata, v);
     assert.equal(r.ok, false, `finalizeRecursive accepted ${v} wei`);
@@ -279,7 +279,8 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     assert.equal(await balance(verifier.address), FEE * decisions);
     const stranger = Address.fromString("0x00000000000000000000000000000000000000c3");
     await evm.stateManager.putAccount(stranger, new Account(0n, 10n ** 18n));
-    const setFee = (fee) => "0x" + sel["setProtocolFee(uint256)"] + word(fee);
+    const setFee = (fee) => "0x" + sel["setFees(uint256,uint256)"] + word(0n) + word(fee);
+    assert.equal(BigInt((await call("0x" + sel["stepFee()"], 0n)).ret), 0n, "no step fee in mode D");
     assert.equal((await call(setFee(FEE), 0n, stranger)).ok, false, "a stranger set the fee");
     const over = await call(setFee(MAX_FEE + 1n), 0n, deployer);
     assert.equal(over.ret.slice(0, 10), selectorOf("FeeAboveCap()"));
@@ -290,7 +291,7 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     assert.ok((await call(withdraw, 0n, deployer)).ok);
     assert.equal(await balance(verifier.address), 0n);
     assert.equal((await balance(deployer)) - before, FEE * decisions);
-    console.log(`protocol fee         : ${FEE * decisions} wei for ${decisions} decisions, cap ${MAX_FEE} wei enforced`);
+    console.log(`decision fee         : ${FEE * decisions} wei for ${decisions} decisions, cap ${MAX_FEE} wei enforced`);
   }
   console.log("OK");
 })().catch((e) => {

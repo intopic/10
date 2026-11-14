@@ -91,13 +91,15 @@ Nga një qark Circom: `zeno-evm recursive` ose Cloud API me `mode=recursive`
 (jo në pajisje: rreth 2 GB RAM). Një pretendim i vendosur më parë refuzohet me
 `AlreadyDecided` pas rreth 8k gaz, kështu që tarifa i kthehet dërguesit.
 
-**Tarifat.** `ZenoLlullVerifier` merr `protocolFee` për çdo hap dhe për çdo
-finalizim (`finalize`, `finalizeUniversal`); `ZenoRecursiveVerifier` për çdo
-`finalizeRecursive`. Të dyja trashëgojnë `contracts/lib/ZenoFees.sol`: pronari
-ndryshon tarifën dhe tërheq fondet, por kurrë mbi `maxFee`, të fiksuar në
-vendosje, dhe nuk prek asgjë nga verifikimi. Konstruktorët:
-`ZenoLlullVerifier(fee, maxFee, decider)`, `ZenoRecursiveVerifier(decider,
-fee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
+**Tarifat.** `ZenoLlullVerifier` merr `stepFee` për çdo hap dhe `decisionFee` për çdo
+finalizim (`finalize`, `finalizeUniversal`); `ZenoRecursiveVerifier` vetëm
+`decisionFee` për çdo `finalizeRecursive`. Hapat paguajnë tashmë gaz, ndaj
+`stepFee` synohet zero ose shumë e vogël dhe çmimi vjen nga `decisionFee`. Të
+dyja trashëgojnë `contracts/lib/ZenoFees.sol`: pronari i ndryshon me
+`setFees(stepFee, decisionFee)` dhe tërheq fondet, por asnjëra nuk kalon
+`maxFee`, të fiksuar në vendosje, dhe nuk prek asgjë nga verifikimi.
+Konstruktorët: `ZenoLlullVerifier(stepFee, decisionFee, maxFee, decider)`,
+`ZenoRecursiveVerifier(decider, decisionFee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
 regjistrimin në kontratën tonë.
 
 **Mjeti `zeno-evm`** (`crates/zeno-evm`) është mjeti i

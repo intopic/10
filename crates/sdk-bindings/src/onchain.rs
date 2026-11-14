@@ -207,14 +207,14 @@ impl OnChainProver {
     }
 
     /// Steps folded but not yet taken: the next [`Self::take_calldata`]
-    /// must be sent with `protocolFee × pending_steps` wei.
+    /// must be sent with `stepFee × pending_steps` wei.
     pub fn pending_steps(&self) -> usize {
         self.pending.len()
     }
 
     /// `verifyFoldedProofBatch` for every step folded since the last call,
     /// for the session the contract returned from `openSession`. Send it
-    /// with `protocolFee × pending_steps()` wei, from the account that
+    /// with `stepFee × pending_steps()` wei, from the account that
     /// opened the session.
     pub fn take_calldata(&mut self, session: &Word) -> Result<Vec<u8>, SdkError> {
         if self.pending.is_empty() {
@@ -226,7 +226,7 @@ impl OnChainProver {
     }
 
     /// Masks the accumulator and proves it satisfiable: the
-    /// `finalizeUniversal` call (send it with `protocolFee` wei). Every
+    /// `finalizeUniversal` call (send it with `decisionFee` wei). Every
     /// folded step must have been taken (and sent) first.
     pub fn finalize(&mut self, session: &Word) -> Result<Vec<u8>, SdkError> {
         self.check_license()?;

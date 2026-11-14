@@ -22,7 +22,8 @@ const witnessCalculator = require(path.join(fixtures, "witness_calculator.js"));
 const LICENSE = process.env.ZENO_TEST_LICENSE;
 assert.ok(LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
 const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-const FEE = 1_000_000_000_000n;
+const FEE = 1_000_000_000_000n; // stepFee
+const DECISION_FEE = 5n * FEE; // decisionFee
 const word = (v) => v.toString(16).padStart(64, "0");
 
 function compile() {
@@ -64,7 +65,7 @@ function compile() {
   };
   const decider = await create("0x" + compiled.decider.evm.bytecode.object);
   const to = await create(
-    "0x" + compiled.verifier.evm.bytecode.object + word(FEE) + word(10n * FEE) + word(BigInt(decider.toString()))
+    "0x" + compiled.verifier.evm.bytecode.object + word(FEE) + word(DECISION_FEE) + word(10n * FEE) + word(BigInt(decider.toString()))
   );
   const send = async (data, value = 0n) => {
     if (typeof data === "string") data = hexToBytes(data);
@@ -107,7 +108,7 @@ function compile() {
   t = performance.now();
   const fin = prover.finalize(sessionId);
   console.log(`finalize (ZK)        : ${(performance.now() - t).toFixed(0)} ms, ${fin.length} bytes of calldata`);
-  const decided = await send(fin, FEE);
+  const decided = await send(fin, DECISION_FEE);
   console.log(`finalizeUniversal    : ${decided.gas} gas`);
 
   // The contract holds the decision: state z_i after STEPS steps, decided.

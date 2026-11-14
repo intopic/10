@@ -139,7 +139,7 @@ impl RecursiveSession {
             "decided_key": to_hex(&params.decided_key(&proof)),
             "claim": to_hex(&claim.concat()),
             "finalizeRecursive": to_hex(&calldata),
-            "fee_units": 1,
+            "decision_fees": 1,
         }))
     }
 }
@@ -207,7 +207,7 @@ impl Prover {
             "verifyFoldedProofBatch": batch,
             "batch_steps": pending,
             "finalizeUniversal": finalize,
-            "fee_units": pending + 1,
+            "decision_fees": 1,
         }))
     }
 }

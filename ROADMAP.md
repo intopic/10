@@ -329,7 +329,7 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] **Ura Circom → EVM** (`zeno-evm key | universal | recursive`): `.r1cs` / `.wtns` → calldata e
       `finalizeUniversal` (B) dhe `finalizeRecursive` (D); teste fund-më-fund në EVM me dëshmi nga
       gjeneruesi i Circom-it; `finalizeRecursive` kthehet menjëherë për një pretendim të vendosur
-- [x] **Hapi 3 — verifikim në zinxhir përmes SDK-së dhe API-së**: tarifa `protocolFee` në çdo vendim
+- [x] **Hapi 3 — verifikim në zinxhir përmes SDK-së dhe API-së**: tarifat `stepFee` (për hap) dhe `decisionFee` (për vendim)
       (`finalize`, `finalizeUniversal`, `finalizeRecursive`) me tavan të pandryshueshëm `maxFee`
       (`contracts/lib/ZenoFees.sol`); `AlreadyDecided` për një pretendim të vendosur (tarifa kthehet);
       mënyra B në pajisje (`ZenoLlullOnChainProver` / `OnChainProver`) me `.ptau` të shkurtuar

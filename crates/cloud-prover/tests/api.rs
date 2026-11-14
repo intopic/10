@@ -726,7 +726,8 @@ async fn mode_b_through_the_api() {
         (answer["steps"].as_u64(), answer["batch_steps"].as_u64()),
         (Some(3), Some(3))
     );
-    assert_eq!(answer["fee_units"], 4);
+    // Send the batch with stepFee × batch_steps, the decision with decisionFee.
+    assert_eq!(answer["decision_fees"], 1);
     assert_eq!(answer["zi"][0], "130308420719099");
     let selector = |sig: &str| sdk_bindings::onchain::to_hex(&evm_verifier::abi::selector(sig));
     assert!(answer["verifyFoldedProofBatch"]

@@ -187,8 +187,8 @@ pub fn wasm_memory_bytes() -> f64 {
 /// const p = new ZenoLlullOnChainProver(licenseKey, r1cs, ptau, ["3"]);
 /// // send p.openSessionCalldata() (value 0) → the contract returns sessionId
 /// p.proveStep(wtns0); p.proveStep(wtns1);
-/// // send p.takeCalldata(sessionId) with value = protocolFee × steps taken
-/// // send p.finalize(sessionId)     with value = protocolFee
+/// // send p.takeCalldata(sessionId) with value = stepFee × steps taken
+/// // send p.finalize(sessionId)     with value = decisionFee
 /// ```
 ///
 /// `ptau`: a public Powers-of-Tau file, or the prefix this circuit needs
@@ -237,14 +237,14 @@ impl ZenoLlullOnChainProver {
     }
 
     /// Calldata of `verifyFoldedProofBatch` for the pending steps; send it
-    /// with `protocolFee × pendingSteps` wei.
+    /// with `stepFee × pendingSteps` wei.
     #[wasm_bindgen(js_name = takeCalldata)]
     pub fn take_calldata(&mut self, session_id: &str) -> Result<Vec<u8>, JsError> {
         let session = crate::onchain::parse_session(session_id).map_err(js_err)?;
         self.inner.take_calldata(&session).map_err(js_err)
     }
 
-    /// Calldata of `finalizeUniversal` (send it with `protocolFee` wei).
+    /// Calldata of `finalizeUniversal` (send it with `decisionFee` wei).
     pub fn finalize(&mut self, session_id: &str) -> Result<Vec<u8>, JsError> {
         let session = crate::onchain::parse_session(session_id).map_err(js_err)?;
         self.inner.finalize(&session).map_err(js_err)
