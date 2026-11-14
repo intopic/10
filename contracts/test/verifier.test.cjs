@@ -13,6 +13,9 @@ const { Address, Account, hexToBytes, bytesToHex } = require("@ethereumjs/util")
 
 const ROOT = path.join(__dirname, "../..");
 const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/release/zeno-evm-fixture");
+// The production tool: Circom `.r1cs` / `.wtns` in, calldata out.
+const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
+const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const MAX_STEP_GAS = 300_000n;
 const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step
 const STEPS = 5;
@@ -390,6 +393,56 @@ const intrinsicGas = (data) =>
     assert.ok((await call(prover, fbatch.finalize.calldata)).ok);
     assert.equal(fbatch.deciderAccepts, true);
     extraSteps += BATCH;
+  }
+
+  // --- Circom -> EVM (mode B): a real Circom circuit, end to end -------------------
+  // Witnesses come from Circom's own witness generator; `zeno-evm` turns the
+  // `.r1cs` and `.wtns` files into calldata; the contract folds every step
+  // and decides the result with the universal decider.
+  {
+    const CIRCOM_STEPS = 4;
+    const os = require("node:os");
+    const witnessCalculator = require(path.join(CIRCOM, "witness_calculator.js"));
+    const calc = await witnessCalculator(fs.readFileSync(path.join(CIRCOM, "step.wasm")));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zeno-circom-"));
+    const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    const wtns = [];
+    let z = 3n;
+    for (let i = 0; i < CIRCOM_STEPS; i++) {
+      const secret = BigInt(11 + i);
+      const file = path.join(dir, `step${i}.wtns`);
+      fs.writeFileSync(file, await calc.calculateWTNSBin({ step_in: [z.toString()], secret: secret.toString() }, 0));
+      wtns.push(file);
+      z = (z * z * z + z + secret) % P;
+    }
+    const ptau = process.env.ZENO_PTAU ?? path.join(ROOT, "crates/evm-verifier/fixtures/pot7_test.ptau");
+    const tool = (args) =>
+      JSON.parse(execFileSync(ZENO_EVM, args, { encoding: "utf8", maxBuffer: 1 << 28 }));
+    const r1cs = path.join(CIRCOM, "step.r1cs");
+    const key = tool(["key", "--r1cs", r1cs, "--ptau", ptau, "--z0", "3"]);
+    const openedC = await call(prover, key.open);
+    assert.ok(openedC.ok, "openSession for the Circom circuit failed");
+    const out = tool(["universal", "--r1cs", r1cs, "--ptau", ptau, "--z0", "3", "--session", openedC.ret, "--wtns", ...wtns]);
+    assert.equal(out.vk, key.vk);
+    assert.deepEqual(out.zi, [z.toString()]);
+    const folded = await call(prover, out.verifyFoldedProofBatch, FEE * BigInt(CIRCOM_STEPS));
+    assert.ok(folded.ok, "verifyFoldedProofBatch of the Circom steps reverted");
+    const decidedC = await call(prover, out.finalizeUniversal);
+    assert.ok(decidedC.ok, "finalizeUniversal of the Circom circuit reverted");
+    const get = "0x" + sel["getAccumulator(bytes32)"] + openedC.ret.slice(2);
+    const after = await readAccumulator(get);
+    assert.equal(after.decided, true);
+    assert.equal(after.steps, CIRCOM_STEPS);
+    assert.deepEqual(after.state.map(BigInt), [z]);
+    // A witness that does not continue from the state is refused by the tool.
+    assert.throws(() =>
+      execFileSync(ZENO_EVM, ["universal", "--r1cs", r1cs, "--ptau", ptau, "--z0", "3", "--session", openedC.ret, "--wtns", wtns[1]], { stdio: "pipe" })
+    );
+    fs.rmSync(dir, { recursive: true });
+    extraSteps += CIRCOM_STEPS;
+    console.log(
+      `Circom -> EVM (B)    : ${CIRCOM_STEPS} steps of step.circom, batch ${folded.gas} gas, finalizeUniversal ${decidedC.gas} gas, proof ${out.proofBytes} bytes`
+    );
   }
 
   // --- Protocol fee -----------------------------------------------------------

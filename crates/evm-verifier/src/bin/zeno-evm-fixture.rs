@@ -243,15 +243,7 @@ fn recursive(steps: usize, rounds: usize, ptau: Option<&str>, rng: &mut StdRng) 
     let starts: Vec<String> = starts.iter().map(|s| s.to_string()).collect();
     let mut claim = vec![word(&Fr::from(proof.i))];
     claim.extend(proof.z0.iter().chain(&proof.zi).map(word));
-    let decided_key = {
-        use sha3::{Digest, Keccak256};
-        let claim_hash: [u8; 32] = Keccak256::digest(claim.concat()).into();
-        let mut h = Keccak256::new();
-        h.update(params.system_id());
-        h.update(claim_hash);
-        let key: [u8; 32] = h.finalize().into();
-        key
-    };
+    let decided_key = params.decided_key(&proof);
     println!(
         "{{\"cfHash\":\"{}\",\"systemId\":\"{}\",\"decidedKey\":\"{}\",\"claim\":\"{}\",\"steps\":{},\"calldata\":\"{}\",\"starts\":[{}],\"lengths\":[{}],\"primaryConstraints\":{},\"closingConstraints\":{},\"proofBytes\":{}}}",
         hex(&params.cf_hash),

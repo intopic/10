@@ -14,6 +14,11 @@
 //! head is returned by [`Meter::head`] and by `GET /v1/usage` (`log_head`);
 //! whoever audits the billing should record it periodically outside the
 //! machine that holds the log.
+//!
+//! A crash while a record is being written can leave a last line without
+//! its newline. Such a record was never acknowledged (its event was not
+//! delivered), so [`Meter::with_log`] cuts it off with a warning instead of
+//! refusing to start; any other damage still stops the service.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -109,8 +114,15 @@ impl Meter {
     }
 
     /// Opens (or creates) a usage log, verifying its hash chain and
-    /// restoring the counters from it.
+    /// restoring the counters from it. An unterminated last line (a write
+    /// cut short by a crash) is removed first, see [`repair_torn_tail`].
     pub fn with_log(path: &Path) -> io::Result<Self> {
+        if let Some(cut) = repair_torn_tail(path)? {
+            eprintln!(
+                "warning: usage log {}: removed an unterminated last record ({cut} bytes) left by an interrupted write; it was never acknowledged",
+                path.display()
+            );
+        }
         let (usage, last_hash) = if path.exists() {
             verify_log(path)?
         } else {
@@ -165,6 +177,51 @@ fn apply(usage: &mut Usage, event: Event) {
     }
 }
 
+/// Removes an unterminated last line from the log at `path`, returning its
+/// length, or `None` if the log ends with a newline (or does not exist).
+///
+/// [`Meter::record`] acknowledges an event only after the whole line,
+/// newline included, was written and synced; a line without its newline is
+/// therefore a record that was never acknowledged, and nothing was delivered
+/// for it.
+pub fn repair_torn_tail(path: &Path) -> io::Result<Option<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(None);
+    }
+    // Scan back from the end for the last newline, in small blocks.
+    let mut end = len;
+    let mut block = [0u8; 4096];
+    loop {
+        let start = end.saturating_sub(block.len() as u64);
+        let chunk = &mut block[..(end - start) as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(chunk)?;
+        if end == len && chunk.last() == Some(&b'\n') {
+            return Ok(None);
+        }
+        if let Some(i) = chunk.iter().rposition(|b| *b == b'\n') {
+            let keep = start + i as u64 + 1;
+            file.set_len(keep)?;
+            file.sync_data()?;
+            return Ok(Some(len - keep));
+        }
+        if start == 0 {
+            // A single, unterminated line: the log held no acknowledged record.
+            file.set_len(0)?;
+            file.sync_data()?;
+            return Ok(Some(len));
+        }
+        end = start;
+    }
+}
+
 /// Verifies the hash chain of a usage log and returns the per-customer
 /// totals and the hash of the last record.
 pub fn verify_log(path: &Path) -> io::Result<(HashMap<String, Usage>, String)> {
@@ -193,4 +250,62 @@ pub fn verify_log(path: &Path) -> io::Result<(HashMap<String, Usage>, String)> {
         prev = record.hash;
     }
     Ok((usage, prev))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_interrupted_last_write_is_cut_off_and_nothing_else() {
+        let path = std::env::temp_dir().join(format!("zeno-torn-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let mut meter = Meter::with_log(&path).unwrap();
+            meter.record("acme", Event::Session, 1).unwrap();
+            meter.record("acme", Event::FoldStep, 2).unwrap();
+        }
+        let complete = std::fs::read(&path).unwrap();
+        let head = Meter::with_log(&path).unwrap().head().to_string();
+
+        // A crash in the middle of the third record.
+        let mut torn = complete.clone();
+        torn.extend_from_slice(br#"{"ts":3,"customer":"acme","eve"#);
+        std::fs::write(&path, &torn).unwrap();
+        assert!(verify_log(&path).is_err());
+        let meter = Meter::with_log(&path).unwrap();
+        assert_eq!(meter.head(), head);
+        assert_eq!(meter.usage("acme").fold_steps, 1);
+        assert_eq!(std::fs::read(&path).unwrap(), complete);
+        drop(meter);
+
+        // A complete record whose newline was not written is not
+        // acknowledged either.
+        let mut meter = Meter::with_log(&path).unwrap();
+        meter.record("acme", Event::Proof, 3).unwrap();
+        drop(meter);
+        let mut no_newline = std::fs::read(&path).unwrap();
+        no_newline.pop();
+        std::fs::write(&path, &no_newline).unwrap();
+        let mut meter = Meter::with_log(&path).unwrap();
+        assert_eq!(meter.usage("acme").proofs, 0);
+        // New records continue the chain on a line of their own.
+        meter.record("acme", Event::Proof, 4).unwrap();
+        drop(meter);
+        assert_eq!(verify_log(&path).unwrap().0["acme"].proofs, 1);
+
+        // Damage anywhere else still stops the service.
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replacen("fold-step", "session", 1)).unwrap();
+        assert!(Meter::with_log(&path).is_err());
+
+        // A log that is a single torn line held nothing acknowledged.
+        std::fs::write(&path, b"{\"ts\":1").unwrap();
+        assert_eq!(
+            Meter::with_log(&path).unwrap().usage("acme"),
+            Usage::default()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        let _ = std::fs::remove_file(&path);
+    }
 }

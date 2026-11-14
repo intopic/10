@@ -12,10 +12,10 @@ pub mod api;
 pub mod circom;
 pub mod lib_wasm_ffi;
 
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use circom::{parse_wtns, CircomR1cs, CircuitLimits, SdkError};
-use decider_zk::CompressedIvcProof;
+use decider_zk::{CompressedIvcProof, ProofFormatError};
 use rand::RngCore;
+use std::sync::Arc;
 use zeno_ivc::{IvcParams, R1csStep, ZenoAccumulator};
 
 /// Primary curve: BN254 (application logic runs in its scalar field).
@@ -51,15 +51,19 @@ impl CircomParams {
     /// Verifies a serialized zero-knowledge proof and returns it decoded;
     /// the public statement is `(proof.i, proof.z0, proof.zi)`.
     pub fn verify_proof(&self, bytes: &[u8]) -> Result<Proof, SdkError> {
-        let proof = Proof::deserialize_compressed(bytes).map_err(|_| SdkError::MalformedProof)?;
+        let proof = Proof::from_bytes(bytes).map_err(|e| match e {
+            ProofFormatError::UnsupportedVersion(v) => SdkError::UnsupportedProofVersion(v),
+            _ => SdkError::MalformedProof,
+        })?;
         proof.verify(&self.ivc)?;
         Ok(proof)
     }
 }
 
-/// An IVC prover for a Circom step circuit.
+/// An IVC prover for a Circom step circuit. The parameters are shared
+/// (`Arc`): provers of the same circuit can use one copy.
 pub struct CircomIvc {
-    pub params: CircomParams,
+    pub params: Arc<CircomParams>,
     pub acc: ZenoAccumulator<Primary, Secondary>,
 }
 
@@ -77,7 +81,26 @@ impl CircomIvc {
         limits: CircuitLimits,
     ) -> Result<Self, SdkError> {
         let params = CircomParams::setup_with_limits(r1cs_bytes, limits)?;
+        Self::with_params(Arc::new(params), z0)
+    }
+
+    /// Starts a computation at state `z0` with already derived parameters.
+    pub fn with_params(params: Arc<CircomParams>, z0: Vec<Fr>) -> Result<Self, SdkError> {
         let acc = ZenoAccumulator::new(&params.ivc, z0)?;
+        Ok(Self { params, acc })
+    }
+
+    /// The prover state as bytes, to pause the computation and continue it
+    /// later with [`Self::resume`]. **Secret**: it holds the folded
+    /// witnesses (see `ZenoAccumulator::to_bytes`).
+    pub fn save_state(&self) -> Vec<u8> {
+        self.acc.to_bytes()
+    }
+
+    /// Continues a computation from [`Self::save_state`]; the state is
+    /// fully checked against the circuit first.
+    pub fn resume(params: Arc<CircomParams>, state: &[u8]) -> Result<Self, SdkError> {
+        let acc = ZenoAccumulator::from_bytes(&params.ivc, state)?;
         Ok(Self { params, acc })
     }
 
@@ -120,11 +143,6 @@ impl CircomIvc {
     /// Produces a serialized succinct zero-knowledge proof of the computation
     /// so far.
     pub fn finalize(&self, rng: &mut impl RngCore) -> Result<Vec<u8>, SdkError> {
-        let proof = Proof::prove(&self.params.ivc, &self.acc, rng)?;
-        let mut bytes = Vec::with_capacity(proof.compressed_size());
-        proof
-            .serialize_compressed(&mut bytes)
-            .expect("serializing to a Vec cannot fail");
-        Ok(bytes)
+        Ok(Proof::prove(&self.params.ivc, &self.acc, rng)?.to_bytes())
     }
 }

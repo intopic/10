@@ -106,7 +106,9 @@ contract ZenoRecursiveVerifier {
         return ZenoCycleFoldShape.HASH;
     }
 
-    /// @notice Decides a final IVC state; reverts if any check fails.
+    /// @notice Decides a final IVC state; reverts if any check fails. A claim
+    /// `(i, z₀, zᵢ)` already decided for this system returns at once, without
+    /// checking the rest of the calldata again (it is already proven).
     /// @param primaryKey universal decider key of the primary circuit (24 words).
     /// @param closingKey universal decider key of the closing circuit (24 words).
     /// @param state `[i, k, z₀[k], zᵢ[k], U(6), u(3), comm_T(2), mask(6),
@@ -133,6 +135,11 @@ contract ZenoRecursiveVerifier {
         Dims memory d = _dims(state.length > 1 ? state[1] : 0);
         Layout memory l = _layout(d);
         if (state.length != l.length || state[0] == 0 || state[0] >= 1 << 64) revert MalformedInput();
+        // A claim decided before is not decided again: the second submission
+        // of the same `(i, z₀, zᵢ)` for this system costs only this lookup.
+        bytes32 claimHash = keccak256(abi.encodePacked(state[0], state[2:2 + 2 * d.arity]));
+        bytes32 claimKey = keccak256(abi.encodePacked(systemId, claimHash));
+        if (decided[claimKey]) return systemId;
         if (cfProof.length != 3 * d.logM + 4 + 2 * (d.logN + 1) + 1 + 2 * COLS + 2) {
             revert MalformedInput();
         }
@@ -191,8 +198,7 @@ contract ZenoRecursiveVerifier {
             ) revert InvalidProof(19);
         }
 
-        bytes32 claimHash = keccak256(abi.encodePacked(state[0], state[2:2 + 2 * d.arity]));
-        decided[keccak256(abi.encodePacked(systemId, claimHash))] = true;
+        decided[claimKey] = true;
         emit RecursiveDecided(systemId, uint64(state[0]), claimHash);
     }
 

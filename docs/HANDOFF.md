@@ -64,7 +64,9 @@ verifikuesi i palosjes: `verifyFoldedProof` (ose `verifyFoldedProofBatch`)
 palos çdo hap në një akumulator të ruajtur në kontratë, dhe `finalizeUniversal`
 verifikon në zinxhir që akumulatori përfundimtar është i kënaqshëm. Angazhimet
 janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxhir
-është lineare në numrin e hapave.
+është lineare në numrin e hapave. Nga një qark Circom: `zeno-evm key` (vk dhe
+`openSession`) dhe `zeno-evm universal` (calldata e palosjes dhe e
+`finalizeUniversal` nga skedarët `.r1cs` / `.wtns`).
 
 **C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
 çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme. Nuk
@@ -78,9 +80,17 @@ Emërtimi A / B / C / D është i njëjtë kudo: në kod, në teste dhe në doku
 **D. IVC rekursive me CycleFold + `finalizeRecursive`.** `zeno-ivc::cyclefold` +
 `evm-verifier::recursive` + `ZenoRecursiveVerifier.sol`. Provuesi palos N hapa
 jashtë zinxhirit; kontrata vendos gjendjen përfundimtare me një thirrje, me
-kosto **të pavarur nga N** (3.57 M gas). Reference string: `.ptau` publike me
+kosto **të pavarur nga N** (3.64 M gas). Reference string: `.ptau` publike me
 2^20 fuqi. Nuk ka çelësa për qark. Sistemi identifikohet me `keccak256(vk
 primar ‖ vk mbyllës ‖ hash i matricave CycleFold)`, që kushdo e rillogarit.
+Nga një qark Circom: `zeno-evm recursive` jep thirrjen `finalizeRecursive`. Një
+pretendim i vendosur më parë kthehet menjëherë (pa riverifikim) kur dërgohet sërish.
+
+**Mjeti `zeno-evm`** (`crates/evm-verifier/src/bin/zeno-evm.rs`) është mjeti i
+prodhimit për mënyrat B dhe D: merr të njëjtët skedarë Circom si SDK-ja dhe
+Cloud Prover, kontrollon çdo dëshmi (vazhdimësinë e gjendjes dhe kufizimet)
+para provimit dhe përdor rastësinë e sistemit operativ. `zeno-evm-fixture`
+mbetet mjet testi (farë e fiksuar, jo ZK).
 
 ## 5. Matjet
 
@@ -167,7 +177,25 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   shkëputet; nëse regjistri nuk shkruhet dot, nuk jepet asgjë. Regjistri
   dallon ndryshimet në mes, por jo prerjen e fundit apo rishkrimin e plotë:
   për këto duhet ruajtur diku tjetër `log_head` (nga `GET /v1/usage`).
+  Një rresht i fundit pa `\n` (shkrim i ndërprerë nga një rrëzim, kurrë i
+  konfirmuar) pritet në nisje me paralajmërim; çdo dëmtim tjetër e ndal
+  nisjen. Kuota `max_steps` e licencës zbatohet për sesion (403). Prova e
+  dhënë mbahet `ZENO_PROOF_RETENTION_SECS` (10 min): përsëritja e
+  `finalize-snark` e kthen pa faturim të dytë (`x-zeno-repeated: true`).
+  Sesionet e të njëjtit `.r1cs` ndajnë parametrat; një detyrë në sfond pastron
+  çdo minutë sesionet joaktive, provat e skaduara dhe qarqet e papërdorura.
+  `GET /metrics` (Prometheus, pa licencë, pa të dhëna klientësh) jep sesionet,
+  punët dhe cache-t: ekspozoje vetëm në rrjetin e operatorit. Sesionet janë në
+  RAM: pas një rinisjeje klienti rifillon (ose vazhdon nga gjendja e ruajtur me
+  SDK-në). Me disa kontejnerë, balancuesi duhet të mbajë afinitet sipas
+  `session`.
   Shërbimi duhet vënë pas TLS-së, se licenca udhëton si bearer.
+- **Formatet e serializuara** (prova `ZLP`+version, gjendja `ZLS`+version)
+  kontrollohen me `core_r1cs::layout` para deserializimit: `ark-serialize`
+  rezervon memorie sipas gjatësisë së deklaruar, kështu që pa këtë kontroll
+  tetë bajte armiqësore e ndërprisnin procesin. Çdo format i ri që vjen nga
+  jashtë duhet të kalojë nga e njëjta rrugë. Gjendja e provuesit përmban
+  dëshmitë: është sekrete.
 - **Transkriptet duhet të përputhen bajt për bajt** mes Rust-it
   (`evm-verifier`) dhe Solidity-t. Testi `contracts/test/verifier.test.cjs`
   ekzekuton kontratat në një EVM lokale kundrejt provave të Rust-it dhe është
@@ -218,7 +246,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 ## 9. Vendime të hapura për pronarin
 
 1. **Finalizimi EVM i IVC-së rekursive** është ndërtuar (mënyra D), me të tre
-   optimizimet e vendosura (3.57 M gas, `.ptau 2^20`). Mbetet vendimi nëse ia
+   optimizimet e vendosura (3.64 M gas, `.ptau 2^20`). Mbetet vendimi nëse ia
    vlen investimi në uljen e mëtejshme të gazit të vendimtarit universal
    (pika 8.2).
 2. **Mënyra Groth16 (C)**: e vendosur. Është jashtë prodhimit, pas
@@ -270,6 +298,23 @@ cargo test --release -p evm-verifier --test closing_decider --test recursive -- 
 
 ```bash
 cargo build --release -p evm-verifier && node contracts/test/recursive.test.cjs
+```
+
+Të dy testet e EVM-së kalojnë edhe një qark të vërtetë Circom
+(`crates/sdk-bindings/fixtures/step.circom`, dëshmi nga gjeneruesi i Circom-it)
+nëpër `zeno-evm` deri te `finalizeUniversal` dhe `finalizeRecursive` (ky i
+fundit vetëm me `ZENO_PTAU`). Me dorë:
+
+```bash
+./target/release/zeno-evm key --r1cs step.r1cs --ptau ppot_0080_18.ptau --z0 3
+```
+
+```bash
+./target/release/zeno-evm universal --r1cs step.r1cs --ptau ppot_0080_18.ptau --z0 3 --session 0x<id> --wtns step0.wtns step1.wtns
+```
+
+```bash
+./target/release/zeno-evm recursive --r1cs step.r1cs --ptau ppot_0080_20.ptau --z0 3 --wtns step0.wtns step1.wtns
 ```
 
 SDK-të:

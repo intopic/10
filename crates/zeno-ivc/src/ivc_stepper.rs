@@ -12,7 +12,7 @@ use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::short_weierstrass::{Projective, SWCurveConfig};
 use ark_ff::{PrimeField, Zero};
 use ark_relations::r1cs::{ConstraintSystem, ConstraintSystemRef, SynthesisError, SynthesisMode};
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::RngCore;
 use core::fmt;
 use core_r1cs::{
@@ -39,6 +39,8 @@ pub enum IvcError {
     ArityMismatch,
     /// A succinct argument in a compressed proof did not verify.
     InvalidSnark,
+    /// Serialized prover state that is not a state of these parameters.
+    MalformedState,
 }
 
 impl From<SynthesisError> for IvcError {
@@ -68,6 +70,7 @@ impl fmt::Display for IvcError {
             Self::StateHashMismatch => write!(f, "IVC state hash mismatch"),
             Self::ArityMismatch => write!(f, "step circuit arity mismatch"),
             Self::InvalidSnark => write!(f, "succinct argument verification failed"),
+            Self::MalformedState => write!(f, "malformed or foreign prover state"),
         }
     }
 }
@@ -93,7 +96,7 @@ where
 /// The constant-size IVC state: a proof that `z_i = F^i(z_0)`.
 ///
 /// Its size depends only on the circuit, never on the number of steps `i`.
-#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct ZenoAccumulator<P1: SWCurveConfig, P2: SWCurveConfig> {
     pub i: u64,
     pub z0: Vec<P1::ScalarField>,
@@ -410,4 +413,107 @@ where
         }
         Ok(())
     }
+
+    /// Serializes the prover state, prefixed with [`STATE_MAGIC`] and
+    /// [`STATE_VERSION`], so that a computation can be paused and resumed
+    /// (possibly on another machine) with [`Self::from_bytes`].
+    ///
+    /// **The state holds the folded witnesses**: it is as secret as the
+    /// witnesses themselves and must be stored accordingly (encrypted at
+    /// rest, never published). Only finalized proofs are zero-knowledge.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.compressed_size());
+        out.extend_from_slice(&STATE_MAGIC);
+        out.push(STATE_VERSION);
+        self.serialize_compressed(&mut out)
+            .expect("serializing to a Vec cannot fail");
+        out
+    }
+
+    /// Restores a state written by [`Self::to_bytes`] for the same
+    /// parameters. Everything is checked before the state is accepted: the
+    /// format, every vector length against the circuit shapes and, after at
+    /// least one step, the full validity of the state ([`Self::verify`]).
+    pub fn from_bytes(params: &IvcParams<P1, P2>, bytes: &[u8]) -> Result<Self, IvcError> {
+        let body = bytes
+            .strip_prefix(&STATE_MAGIC[..])
+            .and_then(|rest| rest.strip_prefix(&[STATE_VERSION]))
+            .ok_or(IvcError::MalformedState)?;
+        if !core_r1cs::layout::fits(body, &Self::layout()) {
+            return Err(IvcError::MalformedState);
+        }
+        let state = Self::deserialize_compressed(body).map_err(|_| IvcError::MalformedState)?;
+        let (s1, s2) = (&params.shape1, &params.shape2);
+        let shapes_ok = state.z0.len() == params.arity
+            && state.zi.len() == params.arity
+            && state.acc1.0.x.len() == s1.num_io
+            && state.acc1.1.w.len() == s1.num_vars
+            && state.acc1.1.e.len() == s1.num_constraints
+            && state.acc2.0.x.len() == s2.num_io
+            && state.acc2.1.w.len() == s2.num_vars
+            && state.acc2.1.e.len() == s2.num_constraints
+            && state.last2.0.x.len() == s2.num_io
+            && state.last2.1.w.len() == s2.num_vars;
+        if !shapes_ok {
+            return Err(IvcError::MalformedState);
+        }
+        if state.i == 0 {
+            // Nothing folded yet: the only valid state is the initial one.
+            if Self::new(params, state.z0.clone())?.to_bytes() != bytes {
+                return Err(IvcError::MalformedState);
+            }
+        } else {
+            state.verify(params)?;
+        }
+        Ok(state)
+    }
 }
+
+impl<P1: SWCurveConfig, P2: SWCurveConfig> ZenoAccumulator<P1, P2> {
+    /// The serialized layout, checked before deserializing (see
+    /// [`core_r1cs::layout`]).
+    fn layout() -> Vec<core_r1cs::layout::Item> {
+        use core_r1cs::layout::Item::{Fixed, Vec as V};
+        let (f1, f2) = (
+            P1::ScalarField::zero().compressed_size(),
+            P2::ScalarField::zero().compressed_size(),
+        );
+        let (g1, g2) = (
+            Projective::<P1>::zero().compressed_size(),
+            Projective::<P2>::zero().compressed_size(),
+        );
+        alloc::vec![
+            Fixed(8),
+            V(f1),
+            V(f1),
+            // acc1: instance (comm_E, u, comm_W, x), witness (E, r_E, W, r_W)
+            Fixed(g1),
+            Fixed(f1),
+            Fixed(g1),
+            V(f1),
+            V(f1),
+            Fixed(f1),
+            V(f1),
+            Fixed(f1),
+            // acc2
+            Fixed(g2),
+            Fixed(f2),
+            Fixed(g2),
+            V(f2),
+            V(f2),
+            Fixed(f2),
+            V(f2),
+            Fixed(f2),
+            // last2: instance (comm_W, x), witness (W, r_W)
+            Fixed(g2),
+            V(f2),
+            V(f2),
+            Fixed(f2),
+        ]
+    }
+}
+
+/// Magic bytes of a serialized prover state ([`ZenoAccumulator::to_bytes`]).
+pub const STATE_MAGIC: [u8; 3] = *b"ZLS";
+/// Format version of a serialized prover state.
+pub const STATE_VERSION: u8 = 1;

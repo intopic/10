@@ -2,7 +2,7 @@
 //! licensed prover, the statement of a proof and the conversions of states.
 //! The bindings only wrap these types in what their generator needs.
 
-use crate::{circom::SdkError, CircomIvc, Fr, Proof};
+use crate::{circom::SdkError, CircomIvc, CircomParams, Fr, Proof};
 use ark_ff::PrimeField;
 use std::str::FromStr;
 use zeno_license::Claims;
@@ -103,6 +103,25 @@ impl LicensedProver {
             license: license.to_string(),
             quota,
         })
+    }
+
+    /// Continues a computation paused with [`Self::save_state`], for the
+    /// same circuit. The license is checked again (expiry and quota count
+    /// the steps already folded).
+    pub fn resume(license: &str, r1cs: &[u8], state: &[u8]) -> Result<Self, SdkError> {
+        let quota = claims(license)?.max_steps;
+        let params = std::sync::Arc::new(CircomParams::setup(r1cs)?);
+        Ok(Self {
+            ivc: CircomIvc::resume(params, state)?,
+            license: license.to_string(),
+            quota,
+        })
+    }
+
+    /// The prover state as bytes, to continue later with [`Self::resume`].
+    /// **Secret**: it holds the folded witnesses; store it encrypted.
+    pub fn save_state(&self) -> Vec<u8> {
+        self.ivc.save_state()
     }
 
     /// Folds one more step, given its Circom witness (`.wtns` bytes).
@@ -212,8 +231,38 @@ mod tests {
             Err(SdkError::QuotaExceeded { max_steps: 1 })
         ));
         assert_eq!(prover.steps(), 1);
+
+        // Pause and resume: the state round-trips, the quota still counts
+        // the step folded before the pause, and a corrupted state is refused.
+        let saved = prover.save_state();
+        let resumed = LicensedProver::resume(&license, R1CS, &saved).unwrap();
+        assert_eq!((resumed.steps(), resumed.state()), (1, prover.state()));
+        let mut resumed = resumed;
+        assert!(matches!(
+            resumed.prove_step(WTNS[1]),
+            Err(SdkError::QuotaExceeded { max_steps: 1 })
+        ));
+        let mut bad = saved.clone();
+        let last = bad.len() - 40;
+        bad[last] ^= 1;
+        assert!(LicensedProver::resume(&license, R1CS, &bad).is_err());
+        assert!(LicensedProver::resume(&license, R1CS, &saved[1..]).is_err());
+
         let proof = prover.finalize().unwrap();
         let params = crate::CircomParams::setup(R1CS).unwrap();
         assert_eq!(statement_of(&params.verify_proof(&proof).unwrap()).steps, 1);
+        // The proof carries its format version; another version is reported
+        // as such, not as a malformed proof.
+        assert_eq!(&proof[..4], b"ZLP\x01");
+        let mut future = proof.clone();
+        future[3] = 2;
+        assert!(matches!(
+            params.verify_proof(&future),
+            Err(SdkError::UnsupportedProofVersion(2))
+        ));
+        assert!(matches!(
+            params.verify_proof(&proof[4..]),
+            Err(SdkError::MalformedProof)
+        ));
     }
 }

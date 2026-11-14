@@ -161,6 +161,21 @@ impl RecursiveParams {
         h.update(self.cf_hash);
         h.finalize().into()
     }
+
+    /// The key under which `ZenoRecursiveVerifier.decided` records the claim
+    /// of `proof`: `keccak256(systemId ‖ keccak256(i ‖ z₀ ‖ zᵢ))`.
+    pub fn decided_key(&self, proof: &RecursiveProof) -> Word {
+        let mut claim = Keccak256::new();
+        claim.update(word(&Fr::from(proof.i)));
+        for z in proof.z0.iter().chain(&proof.zi) {
+            claim.update(word(z));
+        }
+        let claim: Word = claim.finalize().into();
+        let mut h = Keccak256::new();
+        h.update(self.system_id());
+        h.update(claim);
+        h.finalize().into()
+    }
 }
 
 /// The Spartan argument for the CycleFold accumulator.

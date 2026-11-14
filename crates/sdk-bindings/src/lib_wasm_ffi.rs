@@ -19,10 +19,11 @@ fn js_err(e: SdkError) -> JsError {
     JsError::new(&e.to_string())
 }
 
-/// The public statement proven by a proof: `zi = F^steps(z0)`.
+/// The public statement proven by a proof: `zi = F^steps(z0)`. `steps` is
+/// a JavaScript `number`: exact up to 2^53 steps.
 #[wasm_bindgen(getter_with_clone)]
 pub struct Statement {
-    pub steps: u32,
+    pub steps: f64,
     pub z0: Vec<String>,
     pub zi: Vec<String>,
 }
@@ -46,6 +47,22 @@ impl ZenoLlullProver {
         })
     }
 
+    /// Continues a computation saved with `saveState()`, for the same
+    /// circuit. Throws if the license is invalid or the state is corrupted
+    /// or belongs to another circuit.
+    pub fn resume(license: &str, r1cs: &[u8], state: &[u8]) -> Result<ZenoLlullProver, JsError> {
+        Ok(Self {
+            inner: api::LicensedProver::resume(license, r1cs, state).map_err(js_err)?,
+        })
+    }
+
+    /// The prover state, to continue later with `ZenoLlullProver.resume`.
+    /// **Secret**: it holds the folded witnesses; store it encrypted.
+    #[wasm_bindgen(js_name = saveState)]
+    pub fn save_state(&self) -> Vec<u8> {
+        self.inner.save_state()
+    }
+
     /// Folds one more step, given its Circom witness (`.wtns` bytes). Throws
     /// once the license has expired or its step quota is used up.
     #[wasm_bindgen(js_name = proveStep)]
@@ -58,10 +75,10 @@ impl ZenoLlullProver {
         self.inner.verify().map_err(js_err)
     }
 
-    /// Number of steps folded so far.
+    /// Number of steps folded so far (a `number`, exact up to 2^53).
     #[wasm_bindgen(getter)]
-    pub fn steps(&self) -> u32 {
-        self.inner.steps() as u32
+    pub fn steps(&self) -> f64 {
+        self.inner.steps() as f64
     }
 
     /// Current state `z_i` as decimal strings.
@@ -104,7 +121,7 @@ impl ZenoLlullVerifier {
         self.verifications = self.verifications.saturating_add(1);
         let st = api::statement_of(&self.params.verify_proof(proof).map_err(js_err)?);
         Ok(Statement {
-            steps: st.steps as u32,
+            steps: st.steps as f64,
             z0: st.z0,
             zi: st.zi,
         })

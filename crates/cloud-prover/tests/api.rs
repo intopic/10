@@ -431,3 +431,172 @@ async fn a_step_is_billed_even_if_the_client_disconnects() {
     }
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_license_step_quota_holds_on_the_server() {
+    let (private, public) = generate_keypair();
+    let app = app(AppState::new(public, Limits::default(), Meter::in_memory()));
+    let token = issue(
+        &private,
+        &Claims {
+            customer: "acme".into(),
+            plan: "pay-per-proof".into(),
+            expires_at: 4_000_000_000,
+            max_steps: Some(2),
+        },
+    )
+    .unwrap();
+    let (_, body) = call(&app, "POST", "/v1/sessions?z0=3", Some(&token), R1CS).await;
+    let session = json(&body)["session_id"].as_str().unwrap().to_string();
+    let step_uri = format!("/v1/fold-step?session={session}");
+    for wtns in &WTNS[..2] {
+        assert_eq!(
+            call(&app, "POST", &step_uri, Some(&token), wtns).await.0,
+            StatusCode::OK
+        );
+    }
+    let (status, body) = call(&app, "POST", &step_uri, Some(&token), WTNS[2]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("quota of 2 steps"));
+    // The proof of the steps within the quota is still delivered.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/finalize-snark?session={session}"),
+        Some(&token),
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_proof_can_be_fetched_again_without_being_billed_twice() {
+    let (private, public) = generate_keypair();
+    let state = AppState::new(public, Limits::default(), Meter::in_memory());
+    let app = app(state.clone());
+    let token = license(&private, "acme", 4_000_000_000);
+    let other = license(&private, "other", 4_000_000_000);
+    let (_, body) = call(&app, "POST", "/v1/sessions?z0=3", Some(&token), R1CS).await;
+    let session = json(&body)["session_id"].as_str().unwrap().to_string();
+    let step = format!("/v1/fold-step?session={session}");
+    assert_eq!(
+        call(&app, "POST", &step, Some(&token), WTNS[0]).await.0,
+        StatusCode::OK
+    );
+    let fin = format!("/v1/finalize-snark?session={session}");
+
+    // The client hangs up while the proof is computed: it is billed...
+    let hung_up = tokio::time::timeout(
+        std::time::Duration::from_millis(1),
+        call(&app, "POST", &fin, Some(&token), b""),
+    )
+    .await;
+    assert!(
+        hung_up.is_err(),
+        "the proof finished before the client left"
+    );
+    let mut retained = 0;
+    for _ in 0..600 {
+        retained = state.retained_proofs();
+        if retained == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(retained, 1);
+    assert_eq!(state.meter.lock().unwrap().usage("acme").proofs, 1);
+
+    // ...and repeating the request returns the proof, unbilled.
+    let (status, proof) = call(&app, "POST", &fin, Some(&token), b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, again) = call(&app, "POST", &fin, Some(&token), b"").await;
+    assert_eq!((status, &again), (StatusCode::OK, &proof));
+    assert_eq!(state.meter.lock().unwrap().usage("acme").proofs, 1);
+    let statement = CircomParams::setup(R1CS)
+        .unwrap()
+        .verify_proof(&proof)
+        .unwrap()
+        .statement;
+    assert_eq!(statement.i, 1);
+    // Nobody else can fetch it, and the session itself is closed.
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&other), b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app, "POST", &step, Some(&token), WTNS[1]).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_sessions_and_old_proofs_are_swept_and_circuits_are_shared() {
+    let (private, public) = generate_keypair();
+    let limits = Limits {
+        session_idle_timeout: std::time::Duration::from_millis(300),
+        proof_retention: std::time::Duration::from_millis(300),
+        ..Limits::default()
+    };
+    let state = AppState::new(public, limits, Meter::in_memory());
+    let app = app(state.clone());
+    let token = license(&private, "acme", 4_000_000_000);
+    let other = license(&private, "other", 4_000_000_000);
+
+    // Two customers, three sessions, one circuit: its parameters are derived
+    // once and shared.
+    let mut sessions = Vec::new();
+    for t in [&token, &token, &other] {
+        let (status, body) = call(&app, "POST", "/v1/sessions?z0=3", Some(t), R1CS).await;
+        assert_eq!(status, StatusCode::CREATED);
+        sessions.push(json(&body)["session_id"].as_str().unwrap().to_string());
+    }
+    assert_eq!((state.session_count(), state.circuit_count()), (3, 1));
+    let fin = format!("/v1/finalize-snark?session={}", sessions[0]);
+    call(
+        &app,
+        "POST",
+        &format!("/v1/fold-step?session={}", sessions[0]),
+        Some(&token),
+        WTNS[0],
+    )
+    .await;
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&token), b"").await.0,
+        StatusCode::OK
+    );
+
+    let (status, metrics) = call(&app, "GET", "/metrics", None, b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let metrics = String::from_utf8(metrics).unwrap();
+    for line in [
+        "zeno_sessions 2",
+        "zeno_circuits_cached 1",
+        "zeno_proofs_retained 1",
+        "zeno_jobs_running 0",
+        "zeno_jobs_capacity 2",
+    ] {
+        assert!(metrics.contains(line), "{line} missing in\n{metrics}");
+    }
+
+    // The background sweeper closes idle sessions, drops the proof and
+    // forgets the circuit once no session uses it.
+    let sweeper = cloud_prover::spawn_sweeper(state.clone(), std::time::Duration::from_millis(100));
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    sweeper.abort();
+    assert_eq!(
+        (
+            state.session_count(),
+            state.retained_proofs(),
+            state.circuit_count()
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&token), b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+}

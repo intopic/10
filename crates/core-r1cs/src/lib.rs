@@ -12,6 +12,7 @@ extern crate alloc;
 
 #[cfg(feature = "arkworks-bridge")]
 pub mod ark_bridge;
+pub mod layout;
 pub mod mle;
 pub mod relaxed_r1cs;
 pub mod sparse;

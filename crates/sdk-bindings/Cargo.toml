@@ -9,6 +9,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+core-r1cs = { path = "../core-r1cs", default-features = false }
 zeno-ivc = { path = "../zeno-ivc", default-features = false }
 decider-zk = { path = "../decider-zk", default-features = false }
 zeno-license = { path = "../zeno-license", default-features = false }

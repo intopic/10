@@ -49,9 +49,20 @@ prover.verify()
 assert prover.steps() == 3
 assert prover.state() == ["130308420719099"]
 
+# Pause and resume: the saved state continues the same computation.
+saved = prover.save_state()
+resumed = zenollull.Prover.resume(LICENSE, r1cs, saved)
+assert resumed.steps() == 3 and resumed.state() == prover.state()
+corrupted = bytearray(saved)
+corrupted[-40] ^= 1
+expect_error(zenollull.ZenoError.VerificationFailed,
+             lambda: zenollull.Prover.resume(LICENSE, r1cs, bytes(corrupted)))
+print(f"state    : {len(saved)} bytes, resumed")
+
 proof = prover.finalize()
 print(f"proof    : {len(proof)} bytes")
 assert len(proof) < 16 * 1024
+assert proof[:4] == b"ZLP\x01"
 
 verifier = zenollull.Verifier(r1cs)
 statement = verifier.verify(proof)
@@ -61,7 +72,10 @@ tampered = bytearray(proof)
 tampered[len(tampered) // 2] ^= 1
 expect_error(zenollull.ZenoError.VerificationFailed, lambda: verifier.verify(bytes(tampered)))
 expect_error(zenollull.ZenoError.VerificationFailed, lambda: verifier.verify(b""))
-assert verifier.verifications() == 3
+future = bytearray(proof)
+future[3] = 2
+expect_error(zenollull.ZenoError.VerificationFailed, lambda: verifier.verify(bytes(future)))
+assert verifier.verifications() == 4
 
 # License keys are checked against the vendor key compiled into the library;
 # the caller cannot supply a key or a clock of its own.

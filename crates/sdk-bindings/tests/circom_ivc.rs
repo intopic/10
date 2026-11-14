@@ -82,6 +82,30 @@ fn circom_ivc_end_to_end_with_zk_proof() {
     assert!(verifier.verify_proof(&bad).is_err());
     assert!(verifier.verify_proof(&proof[..proof.len() - 1]).is_err());
     assert!(verifier.verify_proof(&[]).is_err());
+
+    // Hostile bytes anywhere (lengths included) are an error, never an abort
+    // on a huge allocation: the layout is checked before deserializing.
+    for at in (4..proof.len()).filter(|at| at < &128 || at % 7 == 0) {
+        let mut bad = proof.clone();
+        bad[at] = !bad[at];
+        // Decoding must return; what decodes must not verify.
+        if let Ok(p) = sdk_bindings::Proof::from_bytes(&bad) {
+            if at % 61 == 3 {
+                assert!(p.verify(&verifier.ivc).is_err());
+            }
+        }
+    }
+    // A saved state: hostile lengths in its header and first vectors.
+    let state = ivc.save_state();
+    for at in 4..160 {
+        let mut bad = state.clone();
+        bad[at] = !bad[at];
+        assert!(zeno_ivc::ZenoAccumulator::<
+            sdk_bindings::Primary,
+            sdk_bindings::Secondary,
+        >::from_bytes(&verifier.ivc, &bad)
+        .is_err());
+    }
 }
 
 #[test]

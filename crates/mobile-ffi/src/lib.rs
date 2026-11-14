@@ -43,7 +43,9 @@ impl From<SdkError> for ZenoError {
     fn from(e: SdkError) -> Self {
         let reason = e.to_string();
         match e {
-            SdkError::Ivc(_) | SdkError::MalformedProof => Self::VerificationFailed { reason },
+            SdkError::Ivc(_) | SdkError::MalformedProof | SdkError::UnsupportedProofVersion(_) => {
+                Self::VerificationFailed { reason }
+            }
             SdkError::License(_) | SdkError::QuotaExceeded { .. } => Self::License { reason },
             _ => Self::InvalidInput { reason },
         }
@@ -95,6 +97,21 @@ impl Prover {
         Ok(Self {
             inner: Mutex::new(api::LicensedProver::new(&license, &r1cs, &z0)?),
         })
+    }
+
+    /// Continues a computation saved with `save_state`, for the same
+    /// circuit; the state is fully checked first.
+    #[uniffi::constructor]
+    pub fn resume(license: String, r1cs: Vec<u8>, state: Vec<u8>) -> Result<Self, ZenoError> {
+        Ok(Self {
+            inner: Mutex::new(api::LicensedProver::resume(&license, &r1cs, &state)?),
+        })
+    }
+
+    /// The prover state, to continue later with `Prover.resume`.
+    /// **Secret**: it holds the folded witnesses; store it encrypted.
+    pub fn save_state(&self) -> Vec<u8> {
+        self.lock().save_state()
     }
 
     /// Folds one more step, given its Circom witness (`.wtns` bytes).

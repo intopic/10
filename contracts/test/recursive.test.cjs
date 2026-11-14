@@ -16,6 +16,9 @@ const { Address, Account, hexToBytes, bytesToHex } = require("@ethereumjs/util")
 
 const ROOT = path.join(__dirname, "../..");
 const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/release/zeno-evm-fixture");
+// The production tool: Circom `.r1cs` / `.wtns` in, calldata out.
+const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
+const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const STEPS = 3;
 
 function compile() {
@@ -90,19 +93,8 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     };
   };
 
-  // ---- The honest decision --------------------------------------------------
-  const shape = await call("0x" + sel["cfShapeHash()"]);
-  assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
-  const res = await call(fx.calldata);
-  assert.ok(res.ok, "finalizeRecursive reverted");
-  assert.equal(res.ret, fx.systemId, "system id");
-  const decided = await call("0x" + sel["decided(bytes32)"] + fx.decidedKey.slice(2));
-  assert.equal(BigInt(decided.ret), 1n, "the claim is recorded as decided");
-  const calldataBytes = (fx.calldata.length - 2) / 2;
-  console.log(`finalizeRecursive    : ${res.gas} gas (${res.exec} execution, ${calldataBytes} bytes of calldata), ${fx.steps} IVC steps`);
-  console.log(`proof                : ${fx.proofBytes} bytes (CycleFold argument + one batched decider proof); primary circuit ${fx.primaryConstraints} constraints, closing circuit ${fx.closingConstraints}`);
-
-  // ---- Forgeries: one word in every part of the calldata --------------------
+  // ---- Forgeries: one word in every part of the calldata, before the honest
+  // claim is decided (a decided claim returns early, see below) ------------
   const names = ["primary key", "closing key", "state", "CycleFold proof", "decider proof"];
   let forged = 0;
   for (let a = 0; a < names.length; ++a) {
@@ -122,6 +114,65 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     }
   }
   console.log(`forgeries            : ${forged} single-word changes, all rejected`);
+
+  // ---- The honest decision --------------------------------------------------
+  const shape = await call("0x" + sel["cfShapeHash()"]);
+  assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
+  const res = await call(fx.calldata);
+  assert.ok(res.ok, "finalizeRecursive reverted");
+  assert.equal(res.ret, fx.systemId, "system id");
+  const decided = await call("0x" + sel["decided(bytes32)"] + fx.decidedKey.slice(2));
+  assert.equal(BigInt(decided.ret), 1n, "the claim is recorded as decided");
+  const calldataBytes = (fx.calldata.length - 2) / 2;
+  console.log(`finalizeRecursive    : ${res.gas} gas (${res.exec} execution, ${calldataBytes} bytes of calldata), ${fx.steps} IVC steps`);
+  console.log(`proof                : ${fx.proofBytes} bytes (CycleFold argument + one batched decider proof); primary circuit ${fx.primaryConstraints} constraints, closing circuit ${fx.closingConstraints}`);
+
+  // ---- A decided claim is not decided again ------------------------------------
+  const again = await call(fx.calldata);
+  assert.ok(again.ok && again.ret === fx.systemId, "a second submission of a decided claim");
+  assert.ok(again.exec < 100_000, `the second submission executed ${again.exec} gas`);
+  console.log(`replay               : ${again.gas} gas (${again.exec} execution): the decided claim returns at once`);
+
+  // ---- Circom -> EVM (mode D): a real Circom circuit, end to end ----------------
+  // Witnesses from Circom's witness generator, the CycleFold IVC and the
+  // recursive proof from `zeno-evm`, decided by the same deployed verifier.
+  if (process.env.ZENO_PTAU) {
+    const CIRCOM_STEPS = 3;
+    const os = require("node:os");
+    const witnessCalculator = require(path.join(CIRCOM, "witness_calculator.js"));
+    const calc = await witnessCalculator(fs.readFileSync(path.join(CIRCOM, "step.wasm")));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zeno-circom-"));
+    const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    const wtns = [];
+    let z = 3n;
+    for (let i = 0; i < CIRCOM_STEPS; i++) {
+      const secret = BigInt(11 + i);
+      const file = path.join(dir, `step${i}.wtns`);
+      fs.writeFileSync(file, await calc.calculateWTNSBin({ step_in: [z.toString()], secret: secret.toString() }, 0));
+      wtns.push(file);
+      z = (z * z * z + z + secret) % P;
+    }
+    const t1 = Date.now();
+    const out = JSON.parse(
+      execFileSync(
+        ZENO_EVM,
+        ["recursive", "--r1cs", path.join(CIRCOM, "step.r1cs"), "--ptau", process.env.ZENO_PTAU, "--z0", "3", "--wtns", ...wtns],
+        { encoding: "utf8", maxBuffer: 1 << 28 }
+      )
+    );
+    fs.rmSync(dir, { recursive: true });
+    assert.deepEqual(out.zi, [z.toString()]);
+    const resC = await call(out.finalizeRecursive);
+    assert.ok(resC.ok, "finalizeRecursive of the Circom circuit reverted");
+    assert.equal(resC.ret, out.systemId);
+    const decidedC = await call("0x" + sel["decided(bytes32)"] + out.decidedKey.slice(2));
+    assert.equal(BigInt(decidedC.ret), 1n, "the Circom claim is recorded as decided");
+    console.log(
+      `Circom -> EVM (D)    : ${CIRCOM_STEPS} steps of step.circom proven in ${((Date.now() - t1) / 1000).toFixed(1)} s, finalizeRecursive ${resC.gas} gas (primary circuit ${out.primaryConstraints} constraints)`
+    );
+  } else {
+    console.log("Circom -> EVM (D)    : skipped (set ZENO_PTAU to a 2^20-power .ptau)");
+  }
 
   // ---- Canonical encodings: z_i + r is the same field element as z_i, but
   // it is not a second encoding of the claim --------------------------------

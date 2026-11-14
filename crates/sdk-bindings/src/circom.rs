@@ -31,6 +31,8 @@ pub enum SdkError {
         constraint: usize,
     },
     MalformedProof,
+    /// A proof of a format version this build does not read.
+    UnsupportedProofVersion(u8),
     InvalidFieldElement,
     /// The circuit exceeds the configured [`CircuitLimits`].
     TooLarge {
@@ -94,6 +96,11 @@ impl fmt::Display for SdkError {
                 write!(f, "witness violates constraint {constraint}")
             }
             Self::MalformedProof => write!(f, "malformed proof bytes"),
+            Self::UnsupportedProofVersion(v) => write!(
+                f,
+                "proof format version {v} is not supported by this build (it reads version {})",
+                decider_zk::PROOF_VERSION
+            ),
             Self::InvalidFieldElement => write!(f, "invalid field element"),
             Self::TooLarge { what, limit, got } => {
                 write!(f, "circuit too large: {got} {what}, the limit is {limit}")
@@ -280,6 +287,45 @@ impl<F: PrimeField> CircomR1cs<F> {
         })
     }
 
+    /// The circuit as a plain R1CS in the layout of the on-chain folding
+    /// verifier (mode B, `evm-verifier`): `Z = (W, x, u)` with public input
+    /// `x = (step_in[k], step_out[k])` and `u` in place of Circom's constant
+    /// wire 0. Every other wire is a witness, in Circom's order.
+    pub fn folding_shape(&self) -> core_r1cs::R1CSShape<F> {
+        let (k, nv) = (self.num_outputs, self.folding_witness_len());
+        let col = |wire: usize| match wire {
+            0 => nv + 2 * k,
+            w if w <= k => nv + k + (w - 1),
+            w if w <= 2 * k => nv + (w - k - 1),
+            w => w - 2 * k - 1,
+        };
+        let map = |rows: &Rows<F>| -> Rows<F> {
+            rows.iter()
+                .map(|row| row.iter().map(|(c, w)| (*c, col(*w))).collect())
+                .collect()
+        };
+        core_r1cs::R1CSShape::new(nv, 2 * k, &map(&self.a), &map(&self.b), &map(&self.c))
+    }
+
+    /// Splits a full wire assignment (from a `.wtns`) into the witness `W`
+    /// and public input `x = (step_in, step_out)` of [`Self::folding_shape`].
+    pub fn folding_assignment(&self, wires: &[F]) -> Result<(Vec<F>, Vec<F>), SdkError> {
+        if wires.len() != self.num_wires {
+            return Err(SdkError::WitnessLength {
+                expected: self.num_wires,
+                got: wires.len(),
+            });
+        }
+        let k = self.num_outputs;
+        let mut x = wires[k + 1..=2 * k].to_vec();
+        x.extend_from_slice(&wires[1..=k]);
+        Ok((wires[2 * k + 1..].to_vec(), x))
+    }
+
+    fn folding_witness_len(&self) -> usize {
+        self.num_wires - 1 - 2 * self.num_outputs
+    }
+
     /// The IVC step function for this circuit with the given wire values.
     /// The matrices are shared with the step, not copied.
     pub fn step(&self, assignment: Option<Vec<F>>) -> R1csStep<F> {
@@ -314,4 +360,24 @@ pub fn parse_wtns<F: PrimeField>(bytes: &[u8]) -> Result<Vec<F>, SdkError> {
         return Err(SdkError::Malformed("wire 0 must be the constant 1"));
     }
     Ok(wires)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bn254::Fr;
+
+    #[test]
+    fn the_folding_layout_is_the_same_relation() {
+        let r1cs = CircomR1cs::<Fr>::parse(include_bytes!("../fixtures/step.r1cs")).unwrap();
+        let wires = parse_wtns::<Fr>(include_bytes!("../fixtures/step0.wtns")).unwrap();
+        let shape = r1cs.folding_shape();
+        let (w, x) = r1cs.folding_assignment(&wires).unwrap();
+        assert_eq!((x.len(), x[0]), (2, Fr::from(3u64)));
+        shape.is_sat(&w, &x).unwrap();
+        // The state is public: another output does not satisfy it.
+        let mut wrong = x.clone();
+        wrong[1] += Fr::from(1u64);
+        assert!(shape.is_sat(&w, &wrong).is_err());
+    }
 }

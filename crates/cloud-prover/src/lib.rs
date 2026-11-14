@@ -7,6 +7,7 @@
 //! | `POST` | `/v1/finalize-snark?session=ID` | — | succinct ZK proof (binary) |
 //! | `GET` | `/v1/usage` | — | metered usage of the caller |
 //! | `GET` | `/healthz` | — | `ok` |
+//! | `GET` | `/metrics` | — | Prometheus text: sessions, jobs, caches |
 //!
 //! Every `/v1` call carries `Authorization: Bearer <license key>`; the key is
 //! verified against the vendor's public key (see `zeno-license`), so the
@@ -28,7 +29,17 @@
 //! * every folded step, proof and session is recorded in the usage log
 //!   **inside** the job that produced it, so a client that disconnects early
 //!   is still billed; if the record cannot be written, the step's session is
-//!   closed and no proof is returned — nothing is given away unbilled.
+//!   closed and no proof is returned — nothing is given away unbilled;
+//! * the license's step quota (`max_steps`) holds per session (`403`);
+//! * a finished proof stays available for [`Limits::proof_retention`]:
+//!   repeating `finalize-snark` for the session returns it again, unbilled,
+//!   so a client that lost the connection does not lose what it paid for;
+//! * sessions of the same circuit share its parameters (by SHA-256 of the
+//!   `.r1cs`), and a background task ([`spawn_sweeper`]) closes idle
+//!   sessions and drops expired proofs.
+//!
+//! `/metrics` and `/healthz` carry no customer data and need no license;
+//! expose them to the operator's network only.
 #![forbid(unsafe_code)]
 
 pub mod metering;
@@ -46,14 +57,15 @@ use metering::{Event, Meter};
 use rand::RngCore;
 use sdk_bindings::{
     circom::{CircuitLimits, SdkError},
-    CircomIvc, Fr,
+    CircomIvc, CircomParams, Fr,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard, TryLockError},
+    sync::{Arc, Mutex, MutexGuard, TryLockError, Weak},
     time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::Semaphore;
@@ -71,6 +83,9 @@ pub struct Limits {
     pub max_wires: usize,
     /// Largest number of constraints a step circuit may declare.
     pub max_constraints: usize,
+    /// How long a finished proof can be fetched again (unbilled) by
+    /// repeating `finalize-snark` for its session.
+    pub proof_retention: Duration,
 }
 
 impl Default for Limits {
@@ -82,6 +97,7 @@ impl Default for Limits {
             max_parallel_jobs: 2,
             max_wires: 1 << 20,
             max_constraints: 1 << 20,
+            proof_retention: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -94,6 +110,15 @@ struct Entry {
     ivc: Option<Arc<Mutex<CircomIvc>>>,
 }
 
+/// A proof that was delivered (and billed), kept for a while so that it can
+/// be fetched again.
+struct Finished {
+    customer: String,
+    steps: u64,
+    proof: Arc<Vec<u8>>,
+    at: Instant,
+}
+
 /// Shared service state.
 pub struct AppState {
     vendor_public_key: [u8; 32],
@@ -101,6 +126,11 @@ pub struct AppState {
     /// Held only for map operations, never while proving and never while
     /// waiting for a session.
     sessions: Mutex<HashMap<String, Entry>>,
+    /// Proofs of finished sessions, by session id.
+    finished: Mutex<HashMap<String, Finished>>,
+    /// Parameters of the circuits in use, by SHA-256 of the `.r1cs`. Weak:
+    /// a circuit's parameters live as long as one of its sessions does.
+    circuits: Mutex<HashMap<[u8; 32], Weak<CircomParams>>>,
     pub meter: Mutex<Meter>,
     jobs: Arc<Semaphore>,
 }
@@ -112,6 +142,8 @@ impl AppState {
             jobs: Arc::new(Semaphore::new(limits.max_parallel_jobs.max(1))),
             limits,
             sessions: Mutex::new(HashMap::new()),
+            finished: Mutex::new(HashMap::new()),
+            circuits: Mutex::new(HashMap::new()),
             meter: Mutex::new(meter),
         })
     }
@@ -121,6 +153,66 @@ impl AppState {
     pub fn session_count(&self) -> usize {
         lock(&self.sessions).len()
     }
+
+    /// Number of circuits whose parameters are in memory.
+    pub fn circuit_count(&self) -> usize {
+        lock(&self.circuits)
+            .values()
+            .filter(|p| p.strong_count() > 0)
+            .count()
+    }
+
+    /// Number of finished proofs still available for fetching again.
+    pub fn retained_proofs(&self) -> usize {
+        lock(&self.finished).len()
+    }
+
+    /// Proving jobs running now.
+    pub fn running_jobs(&self) -> usize {
+        self.limits
+            .max_parallel_jobs
+            .max(1)
+            .saturating_sub(self.jobs.available_permits())
+    }
+
+    /// Closes idle sessions, drops expired proofs and forgets the
+    /// parameters of circuits no session uses any more. Runs every minute
+    /// in the background ([`spawn_sweeper`]) and before a session is
+    /// created.
+    pub fn sweep(&self) {
+        let timeout = self.limits.session_idle_timeout;
+        // A slot still being built is never idle: its job holds it.
+        lock(&self.sessions).retain(|_, e| e.ivc.is_none() || e.last_used.elapsed() < timeout);
+        let retention = self.limits.proof_retention;
+        lock(&self.finished).retain(|_, f| f.at.elapsed() < retention);
+        lock(&self.circuits).retain(|_, p| p.strong_count() > 0);
+    }
+
+    /// The parameters of a circuit, shared with every session of the same
+    /// `.r1cs`, or derived (and remembered) if no session uses it.
+    fn circuit(&self, r1cs: &[u8], limits: CircuitLimits) -> Result<Arc<CircomParams>, SdkError> {
+        let id: [u8; 32] = Sha256::digest(r1cs).into();
+        if let Some(params) = lock(&self.circuits).get(&id).and_then(Weak::upgrade) {
+            return Ok(params);
+        }
+        // Derived without holding the lock; two first sessions of the same
+        // circuit at once may both derive it, and the later one is kept.
+        let params = Arc::new(CircomParams::setup_with_limits(r1cs, limits)?);
+        lock(&self.circuits).insert(id, Arc::downgrade(&params));
+        Ok(params)
+    }
+}
+
+/// Runs [`AppState::sweep`] every `every` on the Tokio runtime.
+pub fn spawn_sweeper(state: Arc<AppState>, every: Duration) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            state.sweep();
+        }
+    })
 }
 
 /// Locks a mutex whose critical sections cannot leave it inconsistent (map
@@ -145,6 +237,7 @@ impl From<SdkError> for ApiError {
             SdkError::StateMismatch => StatusCode::CONFLICT,
             SdkError::Ivc(_) => StatusCode::UNPROCESSABLE_ENTITY,
             SdkError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            SdkError::QuotaExceeded { .. } => StatusCode::FORBIDDEN,
             _ => StatusCode::BAD_REQUEST,
         };
         Self(status, e.to_string())
@@ -322,10 +415,9 @@ async fn create_session(
     let mut id_bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut id_bytes);
     let id: String = id_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    state.sweep();
     {
         let mut sessions = lock(&state.sessions);
-        let timeout = state.limits.session_idle_timeout;
-        sessions.retain(|_, e| e.last_used.elapsed() < timeout);
         let owned = sessions
             .values()
             .filter(|e| e.customer == claims.customer)
@@ -353,7 +445,7 @@ async fn create_session(
     let (shared, session_id) = (state.clone(), id.clone());
     let built = job(&state, move || {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let ivc = CircomIvc::new_with_limits(&body, z0, limits)?;
+            let ivc = CircomIvc::with_params(shared.circuit(&body, limits)?, z0)?;
             bill(&shared, &claims.customer, Event::Session)?;
             Ok(ivc)
         }))
@@ -403,6 +495,12 @@ async fn fold_step(
     let shared = state.clone();
     let (steps, zi) = job(&state, move || {
         with_session(&shared, &id, &session, |ivc| {
+            // The license's quota: steps one prover (session) may fold.
+            if let Some(max_steps) = claims.max_steps {
+                if ivc.acc.i >= max_steps {
+                    return Err(SdkError::QuotaExceeded { max_steps }.into());
+                }
+            }
             ivc.prove_step(&body, &mut rand::rngs::OsRng)?;
             Ok(())
         })?;
@@ -427,30 +525,101 @@ async fn finalize_snark(
     Extension(claims): Extension<Claims>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
+    // A proof already delivered for this session is handed out again,
+    // unbilled, while it is retained.
+    if let Some(id) = query.get("session") {
+        let retained = lock(&state.finished)
+            .get(id)
+            .filter(|f| f.customer == claims.customer)
+            .map(|f| (f.steps, f.proof.clone()));
+        if let Some((steps, proof)) = retained {
+            return Ok(proof_response(steps, &proof, true));
+        }
+    }
     let (id, session) = find_session(&state, &claims, &query)?;
     let shared = state.clone();
+    let customer = claims.customer.clone();
     let (steps, proof) = job(&state, move || {
-        let out = with_session(&shared, &id, &session, |ivc| {
+        let (steps, proof) = with_session(&shared, &id, &session, |ivc| {
             Ok((ivc.acc.i, ivc.finalize(&mut rand::rngs::OsRng)?))
         })?;
         // No proof leaves the service unbilled; the session stays open so
         // that the request can be repeated.
-        bill(&shared, &claims.customer, Event::Proof)?;
+        bill(&shared, &customer, Event::Proof)?;
+        // Billed: from now on the proof is the customer's. It is kept for a
+        // while, so that a client that lost the answer can fetch it again,
+        // and the session is closed.
+        let proof = Arc::new(proof);
+        lock(&shared.finished).insert(
+            id.clone(),
+            Finished {
+                customer,
+                steps,
+                proof: proof.clone(),
+                at: Instant::now(),
+            },
+        );
         remove_session(&shared, &id);
-        Ok(out)
+        Ok((steps, proof))
     })
     .await?;
-    Ok((
+    Ok(proof_response(steps, &proof, false))
+}
+
+fn proof_response(steps: u64, proof: &[u8], repeated: bool) -> Response {
+    (
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (
                 header::HeaderName::from_static("x-zeno-steps"),
                 steps.to_string(),
             ),
+            (
+                header::HeaderName::from_static("x-zeno-repeated"),
+                repeated.to_string(),
+            ),
         ],
-        proof,
+        proof.to_vec(),
     )
-        .into_response())
+        .into_response()
+}
+
+/// Operator metrics in the Prometheus text format. No customer data.
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    let gauges = [
+        (
+            "zeno_sessions",
+            "Session slots (ready or being built).",
+            state.session_count(),
+        ),
+        (
+            "zeno_jobs_running",
+            "Proving jobs running now.",
+            state.running_jobs(),
+        ),
+        (
+            "zeno_jobs_capacity",
+            "Proving jobs allowed at the same time.",
+            state.limits.max_parallel_jobs.max(1),
+        ),
+        (
+            "zeno_circuits_cached",
+            "Circuits whose parameters are in memory.",
+            state.circuit_count(),
+        ),
+        (
+            "zeno_proofs_retained",
+            "Finished proofs available for fetching again.",
+            state.retained_proofs(),
+        ),
+    ];
+    let mut body = String::new();
+    for (name, help, value) in gauges {
+        body.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+        ));
+    }
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body).into_response()
 }
 
 async fn usage(
@@ -487,6 +656,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         ));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/metrics", get(metrics))
         .merge(v1)
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state)

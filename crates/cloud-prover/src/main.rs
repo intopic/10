@@ -6,13 +6,17 @@
 //! * `ZENO_USAGE_LOG` — path of the hash-chained usage log (optional; without
 //!   it usage is only counted in memory);
 //! * `ZENO_MAX_JOBS`, `ZENO_MAX_WIRES`, `ZENO_MAX_CONSTRAINTS`,
-//!   `ZENO_MAX_SESSIONS` — override the default [`Limits`].
+//!   `ZENO_MAX_SESSIONS` — override the default [`Limits`];
+//! * `ZENO_PROOF_RETENTION_SECS` — how long a delivered proof can be
+//!   fetched again (default 600).
+//!
+//! Idle sessions and expired proofs are swept every minute.
 //!
 //! The API carries the license key as a bearer credential: run it behind a
 //! TLS-terminating proxy.
 
-use cloud_prover::{app, metering::Meter, AppState, Limits};
-use std::{path::Path, process::ExitCode};
+use cloud_prover::{app, metering::Meter, spawn_sweeper, AppState, Limits};
+use std::{path::Path, process::ExitCode, time::Duration};
 
 async fn run() -> Result<(), String> {
     let key = std::env::var("ZENO_LICENSE_PUBLIC_KEY")
@@ -35,6 +39,9 @@ async fn run() -> Result<(), String> {
     number("ZENO_MAX_WIRES", &mut limits.max_wires)?;
     number("ZENO_MAX_CONSTRAINTS", &mut limits.max_constraints)?;
     number("ZENO_MAX_SESSIONS", &mut limits.max_sessions_per_customer)?;
+    let mut retention = limits.proof_retention.as_secs() as usize;
+    number("ZENO_PROOF_RETENTION_SECS", &mut retention)?;
+    limits.proof_retention = Duration::from_secs(retention as u64);
     if std::env::var("ZENO_USAGE_LOG").is_err() {
         eprintln!("warning: ZENO_USAGE_LOG is not set; usage is counted in memory only");
     }
@@ -47,6 +54,7 @@ async fn run() -> Result<(), String> {
     );
 
     let state = AppState::new(key, limits, meter);
+    spawn_sweeper(state.clone(), Duration::from_secs(60));
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| format!("cannot bind {bind}: {e}"))?;

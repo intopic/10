@@ -244,6 +244,36 @@ where
         ZkIvcProof::prove(params, acc, rng)?.compress(params)
     }
 
+    /// The proof as bytes: [`PROOF_MAGIC`], [`PROOF_VERSION`], then the
+    /// compressed serialization. This is the format every SDK and the Cloud
+    /// Prover hand out.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.compressed_size());
+        out.extend_from_slice(&PROOF_MAGIC);
+        out.push(PROOF_VERSION);
+        self.serialize_compressed(&mut out)
+            .expect("serializing to a Vec cannot fail");
+        out
+    }
+
+    /// Decodes [`Self::to_bytes`]; a proof of another format version is
+    /// reported as such rather than as a malformed proof.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProofFormatError> {
+        let rest = bytes
+            .strip_prefix(&PROOF_MAGIC[..])
+            .ok_or(ProofFormatError::NotAProof)?;
+        match rest.split_first() {
+            Some((&PROOF_VERSION, body)) => {
+                if !core_r1cs::layout::fits(body, &Self::layout()) {
+                    return Err(ProofFormatError::Malformed);
+                }
+                Self::deserialize_compressed(body).map_err(|_| ProofFormatError::Malformed)
+            }
+            Some((&version, _)) => Err(ProofFormatError::UnsupportedVersion(version)),
+            None => Err(ProofFormatError::Malformed),
+        }
+    }
+
     /// Verifies the proof in time independent of the number of steps.
     pub fn verify(&self, params: &IvcParams<P1, P2>) -> Result<(), IvcError> {
         let (u1, u2) = self.statement.masked_instances(params)?;
@@ -254,5 +284,73 @@ where
             return Err(IvcError::InvalidSnark);
         }
         Ok(())
+    }
+}
+
+impl<P1: SWCurveConfig, P2: SWCurveConfig> CompressedIvcProof<P1, P2> {
+    /// The serialized layout, checked before deserializing (see
+    /// [`core_r1cs::layout`]): a hostile length must not reach the
+    /// allocator.
+    fn layout() -> Vec<core_r1cs::layout::Item> {
+        use ark_ff::Zero;
+        use core_r1cs::layout::Item::{Fixed, Vec as V};
+        let (f1, f2) = (
+            P1::ScalarField::zero().compressed_size(),
+            P2::ScalarField::zero().compressed_size(),
+        );
+        let (g1, g2) = (
+            Projective::<P1>::zero().compressed_size(),
+            Projective::<P2>::zero().compressed_size(),
+        );
+        let relaxed = |f, g| [Fixed(g), Fixed(f), Fixed(g), V(f)];
+        let snark = |f, g| {
+            let ipa = [V(g), V(g), Fixed(f)];
+            let mut items = alloc::vec![Fixed(f), Fixed(f), V(f), V(f)];
+            items.extend(ipa);
+            items.extend([V(f), Fixed(f)]);
+            items.extend(ipa);
+            items
+        };
+        let mut items = alloc::vec![Fixed(8), V(f1), V(f1)];
+        items.extend(relaxed(f1, g1)); // acc1
+        items.extend(relaxed(f2, g2)); // acc2
+        items.extend([Fixed(g2), V(f2), Fixed(g2)]); // last2, comm_t_last
+        items.extend(relaxed(f1, g1)); // mask1
+        items.push(Fixed(g1)); // comm_t1
+        items.extend(relaxed(f2, g2)); // mask2
+        items.push(Fixed(g2)); // comm_t2
+        items.extend(snark(f1, g1));
+        items.extend(snark(f2, g2));
+        items
+    }
+}
+
+/// Magic bytes of a serialized [`CompressedIvcProof`].
+pub const PROOF_MAGIC: [u8; 3] = *b"ZLP";
+/// Format version of a serialized [`CompressedIvcProof`]; verifiers refuse
+/// other versions with [`ProofFormatError::UnsupportedVersion`].
+pub const PROOF_VERSION: u8 = 1;
+
+/// Why bytes could not be decoded as a [`CompressedIvcProof`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProofFormatError {
+    /// The bytes do not start with [`PROOF_MAGIC`].
+    NotAProof,
+    /// A proof of a format version this build does not know.
+    UnsupportedVersion(u8),
+    /// The version is known but the body does not decode.
+    Malformed,
+}
+
+impl core::fmt::Display for ProofFormatError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotAProof => write!(f, "not a Zeno-Llull proof"),
+            Self::UnsupportedVersion(v) => write!(
+                f,
+                "proof format version {v} is not supported (this build reads version {PROOF_VERSION})"
+            ),
+            Self::Malformed => write!(f, "malformed proof bytes"),
+        }
     }
 }

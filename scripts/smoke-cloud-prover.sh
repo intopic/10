@@ -35,6 +35,11 @@ PROOF="$(mktemp)"
 curl -sf -H "$AUTH" -X POST "$URL/v1/finalize-snark?session=$SID" -o "$PROOF" \
   -w 'finalize-snark: HTTP %{http_code}, %{size_download} bytes, %{time_total}s\n'
 test "$(stat -c %s "$PROOF")" -lt 16384
+# The proof stays available for a repeated request, unbilled.
+AGAIN="$(mktemp)"
+curl -sf -H "$AUTH" -X POST "$URL/v1/finalize-snark?session=$SID" -o "$AGAIN"
+cmp "$PROOF" "$AGAIN"
+curl -sf "$URL/metrics" | grep -E '^zeno_(sessions|proofs_retained) '
 
 USAGE="$(curl -sf -H "$AUTH" "$URL/v1/usage")"
 echo "$USAGE"

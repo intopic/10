@@ -145,7 +145,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
       grupuara në një kontroll)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
-- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata) për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold).
+- [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata) për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold; 3.64 M pas forcimit të sigurisë).
       Pengesa: EVM nuk ka precompile për Grumpkin, dhe hapja e një angazhimi Pedersen me `M` elemente
       kërkon `M` shumëzime skalare. Rruga: **CycleFold** (akumulatori sekondar zbret nga ~11k në
       ~1.3k elemente) + **angazhime Hyrax për çdo rresht** (hapja kushton `rreshta + kolona` në vend të
@@ -315,6 +315,20 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
       tela e rrëzonte procesin); faturim brenda punës bllokuese (edhe kur klienti shkëputet) dhe asgjë
       nuk jepet kur regjistri nuk shkruhet; rezervim atomik i sesionit; kufi global i punëve paralele
       (503); asnjë kyç i pritur në handler-a (409 për sesion të zënë); `catch_unwind` — 8 teste
+- [x] **Gjetjet e pyetësorit të 200 pyetjeve** (Cloud Prover): kuota `max_steps` e licencës zbatohet
+      edhe në server (403); prova e dhënë mbahet 10 minuta (`ZENO_PROOF_RETENTION_SECS`) dhe
+      përsëritja e `finalize-snark` e kthen pa faturim të dytë; rreshti i fundit i paplotë i regjistrit
+      (shkrim i ndërprerë, i pakonfirmuar) pritet me paralajmërim në vend që të bllokojë nisjen;
+      pastrim në sfond çdo 60 s; sesionet e të njëjtit `.r1cs` ndajnë parametrat (`Arc`, sipas
+      SHA-256); `GET /metrics` (Prometheus) — 11 teste
+- [x] Gjendja e provuesit ruhet dhe rikthehet (`saveState` / `resume` në WASM, `save_state` /
+      `Prover.resume` në Swift/Kotlin/Python), me kontroll të plotë; prova ka prefiks formati
+      (`ZLP` + version 1); gjatësitë kontrollohen para deserializimit (`core_r1cs::layout`), që një
+      provë armiqësore të mos ndërpresë procesin me një alokim gjigant; `steps` në WASM është
+      `number` (i saktë deri në 2^53)
+- [x] **Ura Circom → EVM** (`zeno-evm key | universal | recursive`): `.r1cs` / `.wtns` → calldata e
+      `finalizeUniversal` (B) dhe `finalizeRecursive` (D); teste fund-më-fund në EVM me dëshmi nga
+      gjeneruesi i Circom-it; `finalizeRecursive` kthehet menjëherë për një pretendim të vendosur
 - [x] `Dockerfile` + test tymi në CI kundrejt kontejnerit
 - [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
 - [x] SDK native me UniFFI (`crates/mobile-ffi`): një API Rust → lidhje Swift, Kotlin dhe Python;

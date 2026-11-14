@@ -50,6 +50,17 @@ assert.ok(LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
   assert.throws(() => prover.proveStep(stale), /current IVC state/);
   assert.equal(prover.steps, STEPS);
 
+  // Pause and resume: the saved state continues the same computation.
+  t = performance.now();
+  const saved = prover.saveState();
+  const resumed = sdk.ZenoLlullProver.resume(LICENSE, r1cs, saved);
+  console.log(`save + resume    : ${saved.length} bytes, ${(performance.now() - t).toFixed(0)} ms`);
+  assert.equal(resumed.steps, STEPS);
+  assert.deepEqual(resumed.state, prover.state);
+  const corrupted = Uint8Array.from(saved);
+  corrupted[corrupted.length - 40] ^= 1;
+  assert.throws(() => sdk.ZenoLlullProver.resume(LICENSE, r1cs, corrupted));
+
   t = performance.now();
   const proof = prover.finalize();
   console.log(`finalize (ZK)    : ${(performance.now() - t).toFixed(0)} ms, proof ${proof.length} bytes`);
@@ -63,6 +74,12 @@ assert.ok(LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
   assert.deepEqual(statement.z0, ["3"]);
   assert.deepEqual(statement.zi, [z.toString()]);
 
+  // The proof starts with its format: "ZLP" and version 1.
+  assert.deepEqual([...proof.subarray(0, 4)], [0x5a, 0x4c, 0x50, 1]);
+  const future = Uint8Array.from(proof);
+  future[3] = 2;
+  assert.throws(() => verifier.verify(future), /version 2 is not supported/);
+
   // Any bit flip invalidates the proof.
   for (const offset of [8, proof.length >> 1, proof.length - 1]) {
     const bad = Uint8Array.from(proof);
@@ -72,7 +89,7 @@ assert.ok(LICENSE, "set ZENO_TEST_LICENSE (see `zeno-license issue --dev`)");
   assert.throws(() => new sdk.ZenoLlullProver(LICENSE, r1cs.subarray(0, 100), ["3"]), /malformed/);
   assert.throws(() => new sdk.ZenoLlullProver(LICENSE, r1cs, ["not-a-number"]), /invalid field element/);
 
-  assert.equal(verifier.verifications, 4);
+  assert.equal(verifier.verifications, 5);
 
   // License keys are checked against the vendor key compiled into the
   // package; the caller cannot supply a key or a clock of its own.

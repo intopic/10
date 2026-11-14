@@ -22,4 +22,6 @@ pub mod ipa;
 pub mod spartan;
 pub mod sumcheck;
 
-pub use compressed_snark::{CompressedIvcProof, FoldedStatement, ZkIvcProof};
+pub use compressed_snark::{
+    CompressedIvcProof, FoldedStatement, ProofFormatError, ZkIvcProof, PROOF_MAGIC, PROOF_VERSION,
+};

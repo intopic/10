@@ -4,7 +4,7 @@
 use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::{short_weierstrass::SWCurveConfig, CurveConfig};
 use ark_ff::PrimeField;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::CanonicalSerialize;
 use decider_zk::{CompressedIvcProof, ZkIvcProof};
 use std::{process::ExitCode, time::Instant};
 use zeno_ivc::{CubicStep, IvcParams, ZenoAccumulator};
@@ -92,12 +92,8 @@ where
     let proof = zk.compress(&params).map_err(err)?;
     println!("compression          : {:.2?}", t.elapsed());
 
-    let mut bytes = Vec::new();
-    proof
-        .serialize_compressed(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    let decoded = CompressedIvcProof::<P1, P2>::deserialize_compressed(&bytes[..])
-        .map_err(|e| e.to_string())?;
+    let bytes = proof.to_bytes();
+    let decoded = CompressedIvcProof::<P1, P2>::from_bytes(&bytes).map_err(|e| e.to_string())?;
     let t = Instant::now();
     decoded.verify(&params).map_err(err)?;
     println!("verification         : OK in {:.2?}", t.elapsed());
