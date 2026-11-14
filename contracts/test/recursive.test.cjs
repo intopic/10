@@ -21,7 +21,12 @@ const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-ev
 const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const STEPS = 3;
 const FEE = 2_000_000_000_000n; // decisionFee: per finalizeRecursive
-const MAX_FEE = 10n * FEE;
+const STEP_FEE = FEE / 10n; // stepFee: per IVC step the decision covers
+const MAX_FEE = 10n * FEE; // cap of each fee and of a decision's total
+const feeFor = (steps) => {
+  const fee = FEE + STEP_FEE * BigInt(steps);
+  return fee < MAX_FEE ? fee : MAX_FEE;
+};
 
 function compile() {
   const read = (name) => ({ content: fs.readFileSync(path.join(__dirname, "..", name), "utf8") });
@@ -80,17 +85,23 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // The CycleFold matrices are compiled into the verifier (ZenoCycleFoldShape).
   const decider = await create("0x" + compiled.decider.evm.bytecode.object, "batched decider");
   const verifierInit =
-    "0x" + compiled.recursive.evm.bytecode.object + word(BigInt(decider.address.toString())) + word(FEE) + word(MAX_FEE);
+    "0x" + compiled.recursive.evm.bytecode.object + word(BigInt(decider.address.toString())) + word(STEP_FEE) + word(FEE) + word(MAX_FEE);
   const verifier = await create(verifierInit, "recursive verifier");
   const runtime = compiled.recursive.evm.deployedBytecode.object.length / 2;
   assert.ok(runtime <= 24576, "the verifier exceeds the contract size limit");
   console.log(`deployment           : ${verifier.gas} gas (verifier, ${runtime} bytes), ${decider.gas} gas (batched decider)`);
 
-  // finalizeRecursive pays one fee: attached unless another value is given.
+  // finalizeRecursive pays recursiveFee(i), i = state[0]: attached unless
+  // another value is given.
   const finalizeSel = sel["finalizeRecursive(uint256[],uint256[],uint256[],uint256[],uint256[])"];
+  const stepsOf = (dataHex) => {
+    const at = (byte) => BigInt("0x" + dataHex.slice(2 + 2 * byte, 2 + 2 * byte + 64));
+    const stateOffset = Number(at(4 + 64)); // third head word: the offset of `state`
+    return at(4 + stateOffset + 32); // after its length word: state[0]
+  };
   const call = async (dataHex, value, caller = prover) => {
     const bytes = hexToBytes(dataHex);
-    value ??= dataHex.slice(2, 10) === finalizeSel ? FEE : 0n;
+    value ??= dataHex.slice(2, 10) === finalizeSel ? feeFor(stepsOf(dataHex)) : 0n;
     const res = await evm.runCall({ caller, to: verifier.address, data: bytes, value, gasLimit: 30_000_000n });
     return {
       ok: res.execResult.exceptionError === undefined,
@@ -125,8 +136,13 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // ---- The honest decision --------------------------------------------------
   const shape = await call("0x" + sel["cfShapeHash()"]);
   assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
-  // The fee is exactly decisionFee.
-  for (const v of [0n, FEE - 1n, FEE + 1n]) {
+  // The fee is exactly decisionFee + stepFee × steps, as the contract says.
+  assert.equal(stepsOf(fx.calldata), BigInt(fx.steps));
+  const quoted = await call("0x" + sel["recursiveFee(uint256)"] + word(BigInt(fx.steps)), 0n);
+  assert.equal(BigInt(quoted.ret), feeFor(fx.steps));
+  const capped = await call("0x" + sel["recursiveFee(uint256)"] + word(1n << 40n), 0n);
+  assert.equal(BigInt(capped.ret), MAX_FEE, "a decision never costs more than maxFee");
+  for (const v of [0n, FEE, feeFor(fx.steps) - 1n, feeFor(fx.steps) + 1n]) {
     const r = await call(fx.calldata, v);
     assert.equal(r.ok, false, `finalizeRecursive accepted ${v} wei`);
   }
@@ -205,12 +221,14 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // ---- Protocol fee: paid by every decision, capped, withdrawn by the owner ----
   {
     const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
+    // Every decision here covers 3 steps.
     const decisions = process.env.ZENO_PTAU ? 2n : 1n;
-    assert.equal(await balance(verifier.address), FEE * decisions);
+    const paid = feeFor(3) * decisions;
+    assert.equal(await balance(verifier.address), paid);
     const stranger = Address.fromString("0x00000000000000000000000000000000000000c3");
     await evm.stateManager.putAccount(stranger, new Account(0n, 10n ** 18n));
-    const setFee = (fee) => "0x" + sel["setFees(uint256,uint256)"] + word(0n) + word(fee);
-    assert.equal(BigInt((await call("0x" + sel["stepFee()"], 0n)).ret), 0n, "no step fee in mode D");
+    const setFee = (fee) => "0x" + sel["setFees(uint256,uint256)"] + word(STEP_FEE) + word(fee);
+    assert.equal(BigInt((await call("0x" + sel["stepFee()"], 0n)).ret), STEP_FEE);
     assert.equal((await call(setFee(FEE), 0n, stranger)).ok, false, "a stranger set the fee");
     const over = await call(setFee(MAX_FEE + 1n), 0n, deployer);
     assert.equal(over.ret.slice(0, 10), selectorOf("FeeAboveCap()"));
@@ -220,8 +238,8 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     const before = await balance(deployer);
     assert.ok((await call(withdraw, 0n, deployer)).ok);
     assert.equal(await balance(verifier.address), 0n);
-    assert.equal((await balance(deployer)) - before, FEE * decisions);
-    console.log(`decision fee         : ${FEE * decisions} wei for ${decisions} decisions, cap ${MAX_FEE} wei enforced`);
+    assert.equal((await balance(deployer)) - before, paid);
+    console.log(`decision fee         : ${paid} wei for ${decisions} decisions of 3 steps (decisionFee + stepFee × steps), cap ${MAX_FEE} wei enforced`);
   }
   console.log("OK");
 })().catch((e) => {

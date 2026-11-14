@@ -98,13 +98,23 @@ contract ZenoRecursiveVerifier is ZenoFees {
         uint256 gamma;
     }
 
-    /// @param decisionFee_ fee per `finalizeRecursive`; @param maxFee_ its
-    /// permanent cap. No step is folded on-chain here, so `stepFee` starts
-    /// at zero and is not charged. Fees never affect what is decided.
-    constructor(IZenoBatchedDecider decider_, uint256 decisionFee_, uint256 maxFee_)
-        ZenoFees(0, decisionFee_, maxFee_)
+    /// @param stepFee_ fee per IVC step the decision covers; @param
+    /// decisionFee_ fee per decision; @param maxFee_ the permanent cap of each
+    /// of them and of the total of a decision (see `recursiveFee`). Fees never
+    /// affect what is decided.
+    constructor(IZenoBatchedDecider decider_, uint256 stepFee_, uint256 decisionFee_, uint256 maxFee_)
+        ZenoFees(stepFee_, decisionFee_, maxFee_)
     {
         decider = decider_;
+    }
+
+    /// @notice The fee of deciding a claim of `steps` IVC steps:
+    /// `decisionFee + stepFee × steps`, never more than `maxFee`. The fee
+    /// grows with the work one decision replaces (and so with what it saves)
+    /// and stops at the cap, so a decision never costs more than `maxFee`.
+    function recursiveFee(uint256 steps) public view returns (uint256) {
+        uint256 fee = decisionFee + stepFee * steps;
+        return fee < maxFee ? fee : maxFee;
     }
 
     /// @notice `keccak256` of the CycleFold records: the CycleFold part of
@@ -114,7 +124,7 @@ contract ZenoRecursiveVerifier is ZenoFees {
     }
 
     /// @notice Decides a final IVC state; reverts if any check fails. Costs
-    /// `decisionFee` (`msg.value`). A claim `(i, z₀, zᵢ)` already decided for
+    /// `recursiveFee(i)` (`msg.value`), `i` the number of steps in `state[0]`. A claim `(i, z₀, zᵢ)` already decided for
     /// this system reverts at once with `AlreadyDecided` (read `decided`).
     /// @param primaryKey universal decider key of the primary circuit (24 words).
     /// @param closingKey universal decider key of the closing circuit (24 words).
@@ -130,7 +140,6 @@ contract ZenoRecursiveVerifier is ZenoFees {
         uint256[] calldata cfProof,
         uint256[] calldata deciderProof
     ) external payable returns (bytes32 systemId) {
-        _chargeDecision();
         if (primaryKey.length != 24 || closingKey.length != 24) revert MalformedInput();
         // Both universal proofs must be over the same [τ]₂.
         for (uint256 k = 19; k < 23; ++k) {
@@ -143,6 +152,9 @@ contract ZenoRecursiveVerifier is ZenoFees {
         Dims memory d = _dims(state.length > 1 ? state[1] : 0);
         Layout memory l = _layout(d);
         if (state.length != l.length || state[0] == 0 || state[0] >= 1 << 64) revert MalformedInput();
+        // state[0] < 2^64 and stepFee <= maxFee: no overflow. The step count
+        // is the one the proof below binds, so it cannot be understated.
+        if (msg.value != recursiveFee(state[0])) revert WrongFee();
         // A claim decided before is not decided (nor paid for) again: the
         // second submission of the same `(i, z₀, zᵢ)` for this system reverts
         // after this lookup, and its fee goes back to the sender.

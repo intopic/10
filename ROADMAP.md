@@ -327,6 +327,8 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] **Ura Circom → EVM** (`zeno-evm key | universal | recursive`): `.r1cs` / `.wtns` → calldata e
       `finalizeUniversal` (B) dhe `finalizeRecursive` (D); teste fund-më-fund në EVM me dëshmi nga
       gjeneruesi i Circom-it; `finalizeRecursive` kthehet menjëherë për një pretendim të vendosur
+- [x] **Tarifa e mënyrës D sipas vlerës:** `recursiveFee(i) = decisionFee + stepFee × i`, me tavan `maxFee`;
+      `i` lidhet nga prova, pra nuk mund të deklarohet më pak
 - [x] **Fokusi: SDK + kontrata (14 nëntor 2026).** Cloud Prover (`crates/cloud-prover`, `Dockerfile`, testi
       i tymit, puna e CI-së) u hoq me vendim të pronarit; mënyra D kaloi te SDK-ja e serverit
       (`sdk_bindings::recursive`, edhe në Python/Kotlin/Swift). Pikat më poshtë për Cloud Prover janë

@@ -10,7 +10,7 @@
 //! let circuit = Arc::new(RecursiveCircuit::new(r1cs, &srs)?);   // once per circuit
 //! let mut p = RecursiveProver::new(license, circuit, &["3"])?;   // once per computation
 //! p.prove_step(wtns0)?; p.prove_step(wtns1)?;
-//! let call = p.finalize()?;   // send call.calldata with decisionFee wei
+//! let call = p.finalize()?;   // send call.calldata with recursiveFee(call.steps) wei
 //! ```
 
 use crate::{
@@ -71,7 +71,9 @@ impl RecursiveCircuit {
 /// What `finalizeRecursive` needs, and how to find the decision afterwards.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecursiveCall {
-    /// Calldata of `finalizeRecursive`; send it with `decisionFee` wei.
+    /// Calldata of `finalizeRecursive`; send it with
+    /// `recursiveFee(steps)` wei (`decisionFee + stepFee × steps`, capped at
+    /// `maxFee`; the contract's view function gives the exact value).
     pub calldata: Vec<u8>,
     pub steps: u64,
     pub z0: Vec<String>,

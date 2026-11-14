@@ -240,7 +240,8 @@ impl RecursiveCircuit {
     }
 }
 
-/// What `finalizeRecursive` needs; send `calldata` with `decisionFee` wei.
+/// What `finalizeRecursive` needs; send `calldata` with the contract's
+/// `recursiveFee(steps)` wei.
 #[derive(uniffi::Record)]
 pub struct RecursiveCall {
     pub calldata: Vec<u8>,

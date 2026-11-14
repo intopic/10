@@ -93,14 +93,17 @@ ekzekutojnë në makinat e tyre. Një pretendim i vendosur më parë refuzohet m
 `AlreadyDecided` pas rreth 8k gaz, kështu që tarifa i kthehet dërguesit.
 
 **Tarifat.** `ZenoLlullVerifier` merr `stepFee` për çdo hap dhe `decisionFee` për çdo
-finalizim (`finalize`, `finalizeUniversal`); `ZenoRecursiveVerifier` vetëm
-`decisionFee` për çdo `finalizeRecursive`. Hapat paguajnë tashmë gaz, ndaj
+finalizim (`finalize`, `finalizeUniversal`); `ZenoRecursiveVerifier` merr për
+çdo `finalizeRecursive` `recursiveFee(i) = decisionFee + stepFee × i` (`i` =
+hapat që mbulon vendimi, i lidhur nga prova), kurrë mbi `maxFee`: tarifa rritet
+me punën që zëvendëson vendimi, pra me kursimin e klientit, dhe ndalet te
+tavani. Hapat paguajnë tashmë gaz, ndaj
 `stepFee` synohet zero ose shumë e vogël dhe çmimi vjen nga `decisionFee`. Të
 dyja trashëgojnë `contracts/lib/ZenoFees.sol`: pronari i ndryshon me
 `setFees(stepFee, decisionFee)` dhe tërheq fondet, por asnjëra nuk kalon
 `maxFee`, të fiksuar në vendosje, dhe nuk prek asgjë nga verifikimi.
 Konstruktorët: `ZenoLlullVerifier(stepFee, decisionFee, maxFee, decider)`,
-`ZenoRecursiveVerifier(decider, decisionFee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
+`ZenoRecursiveVerifier(decider, stepFee, decisionFee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
 regjistrimin në kontratën tonë.
 
 **Mjeti `zeno-evm`** (`crates/zeno-evm`) është mjeti i
