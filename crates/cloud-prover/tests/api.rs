@@ -600,3 +600,228 @@ async fn idle_sessions_and_old_proofs_are_swept_and_circuits_are_shared() {
         StatusCode::NOT_FOUND
     );
 }
+
+async fn call_full(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: &[u8],
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_vec()))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    (
+        status,
+        headers,
+        res.into_body().collect().await.unwrap().to_bytes().to_vec(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn evm_modes_need_a_reference_string() {
+    let (private, public) = generate_keypair();
+    let app = app(AppState::new(public, Limits::default(), Meter::in_memory()));
+    let token = license(&private, "acme", 4_000_000_000);
+    for mode in ["universal", "recursive"] {
+        let uri = format!("/v1/sessions?z0=3&mode={mode}");
+        let (status, body) = call(&app, "POST", &uri, Some(&token), R1CS).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(json(&body)["error"].as_str().unwrap().contains("EVM modes"));
+    }
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions?z0=3&mode=other",
+        Some(&token),
+        R1CS,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mode_b_through_the_api() {
+    use std::sync::Arc;
+    const PTAU: &[u8] = include_bytes!("../../evm-verifier/fixtures/pot7_test.ptau");
+    let srs = evm_verifier::kzg::Srs::from_ptau(PTAU, 128, &mut rand::rngs::OsRng).unwrap();
+    let (private, public) = generate_keypair();
+    let state = AppState::with_reference_string(
+        public,
+        Limits::default(),
+        Meter::in_memory(),
+        Some(Arc::new(srs)),
+    );
+    let app = app(state.clone());
+    let token = license(&private, "acme", 4_000_000_000);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/sessions?z0=3&mode=universal",
+        Some(&token),
+        R1CS,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    assert_eq!(created["mode"], "universal");
+    let session = created["session_id"].as_str().unwrap().to_string();
+    // The same vk as the SDK computes on a device from the same ceremony.
+    let device = sdk_bindings::onchain::OnChainProver::new(
+        &issue(
+            &zeno_license::DEV_PRIVATE_KEY,
+            &Claims {
+                customer: "x".into(),
+                plan: "y".into(),
+                expires_at: 4_000_000_000,
+                max_steps: None,
+            },
+        )
+        .unwrap(),
+        R1CS,
+        PTAU,
+        &["3".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        created["vk"],
+        sdk_bindings::onchain::to_hex(&device.vk()).as_str()
+    );
+    assert!(created["open_session"].as_str().unwrap().starts_with("0x"));
+
+    for wtns in WTNS {
+        let uri = format!("/v1/fold-step?session={session}");
+        assert_eq!(
+            call(&app, "POST", &uri, Some(&token), wtns).await.0,
+            StatusCode::OK
+        );
+    }
+    // Not a mode-A session; and mode B needs the on-chain session id.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/finalize-snark?session={session}"),
+        Some(&token),
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let fin = format!("/v1/finalize-evm?session={session}");
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&token), b"").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let fin = format!("{fin}&onchain=0x{}", "cd".repeat(32));
+    let (status, headers, body) = call_full(&app, "POST", &fin, &token, b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-zeno-repeated"], "false");
+    let answer = json(&body);
+    assert_eq!(
+        (answer["steps"].as_u64(), answer["batch_steps"].as_u64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(answer["fee_units"], 4);
+    assert_eq!(answer["zi"][0], "130308420719099");
+    let selector = |sig: &str| sdk_bindings::onchain::to_hex(&evm_verifier::abi::selector(sig));
+    assert!(answer["verifyFoldedProofBatch"]
+        .as_str()
+        .unwrap()
+        .starts_with(&selector("verifyFoldedProofBatch(bytes32,uint256[])")));
+    assert!(answer["finalizeUniversal"]
+        .as_str()
+        .unwrap()
+        .starts_with(&selector(
+            "finalizeUniversal(bytes32,bytes,uint256[],uint256[])"
+        )));
+    // Repeated: the same answer, billed once.
+    let (status, headers, again) = call_full(&app, "POST", &fin, &token, b"").await;
+    assert_eq!((status, &again), (StatusCode::OK, &body));
+    assert_eq!(headers["x-zeno-repeated"], "true");
+    let usage = state.meter.lock().unwrap().usage("acme");
+    assert_eq!((usage.sessions, usage.fold_steps, usage.proofs), (1, 3, 1));
+
+    let (status, metrics) = call(&app, "GET", "/metrics", None, b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8(metrics)
+        .unwrap()
+        .contains("zeno_evm_modes 1"));
+}
+
+/// Mode D through the API: needs `ZENO_PTAU` (2^20 powers) and about 2 GB.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a 2^20-power reference string (ZENO_PTAU); run explicitly"]
+async fn mode_d_through_the_api() {
+    use std::sync::Arc;
+    let path = std::env::var("ZENO_PTAU").expect("ZENO_PTAU");
+    let bytes = std::fs::read(path).unwrap();
+    let srs = evm_verifier::kzg::Srs::from_ptau(&bytes, 1 << 20, &mut rand::rngs::OsRng).unwrap();
+    drop(bytes);
+    let (private, public) = generate_keypair();
+    let state = AppState::with_reference_string(
+        public,
+        Limits::default(),
+        Meter::in_memory(),
+        Some(Arc::new(srs)),
+    );
+    let app = app(state.clone());
+    let token = license(&private, "acme", 4_000_000_000);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/sessions?z0=3&mode=recursive",
+        Some(&token),
+        R1CS,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{:?}", json(&body));
+    let session = json(&body)["session_id"].as_str().unwrap().to_string();
+    for wtns in &WTNS[..2] {
+        let uri = format!("/v1/fold-step?session={session}");
+        assert_eq!(
+            call(&app, "POST", &uri, Some(&token), wtns).await.0,
+            StatusCode::OK
+        );
+    }
+    let fin = format!("/v1/finalize-evm?session={session}");
+    let t = std::time::Instant::now();
+    let (status, _) = call(&app, "POST", &fin, Some(&token), b"").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // While it runs: 202, and the session takes no more steps.
+    let (status, _) = call(&app, "POST", &fin, Some(&token), b"").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let uri = format!("/v1/fold-step?session={session}");
+    assert_eq!(
+        call(&app, "POST", &uri, Some(&token), WTNS[2]).await.0,
+        StatusCode::CONFLICT
+    );
+    let body = loop {
+        let (status, body) = call(&app, "POST", &fin, Some(&token), b"").await;
+        if status != StatusCode::ACCEPTED {
+            assert_eq!(status, StatusCode::OK, "{:?}", json(&body));
+            break body;
+        }
+        assert!(
+            t.elapsed().as_secs() < 900,
+            "the recursive proof took too long"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    println!("mode D through the API: {:.1} s", t.elapsed().as_secs_f64());
+    let answer = json(&body);
+    assert_eq!(answer["steps"], 2);
+    let selector = sdk_bindings::onchain::to_hex(&evm_verifier::abi::selector(
+        "finalizeRecursive(uint256[],uint256[],uint256[],uint256[],uint256[])",
+    ));
+    assert!(answer["finalizeRecursive"]
+        .as_str()
+        .unwrap()
+        .starts_with(&selector));
+    let usage = state.meter.lock().unwrap().usage("acme");
+    assert_eq!((usage.proofs, usage.recursive_proofs), (0, 1));
+}

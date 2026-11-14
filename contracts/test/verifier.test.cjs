@@ -16,6 +16,9 @@ const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/rele
 // The production tool: Circom `.r1cs` / `.wtns` in, calldata out.
 const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
 const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
+// The Cloud Prover and the license tool, for the API -> EVM test.
+const SERVER_BIN = process.env.ZENO_CLOUD_PROVER ?? path.join(ROOT, "target/release/zenollull-cloud-prover");
+const LICENSE_BIN = path.join(ROOT, "target/release/zeno-license");
 const MAX_STEP_GAS = 300_000n;
 const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step and per finalization
 const MAX_FEE = 10n * FEE; // the permanent cap of the fee
@@ -467,6 +470,81 @@ const intrinsicGas = (data) =>
     console.log(
       `Circom -> EVM (B)    : ${CIRCOM_STEPS} steps of step.circom, batch ${folded.gas} gas, finalizeUniversal ${decidedC.gas} gas, proof ${out.proofBytes} bytes`
     );
+  }
+
+  // --- Circom -> Cloud API -> EVM (mode B) -------------------------------------
+  // The real service, with a reference string loaded at start, proves the
+  // steps; the client only relays its calldata to the contract.
+  {
+    const { spawn, execFileSync: run } = require("node:child_process");
+    const os = require("node:os");
+    const keys = Object.fromEntries(
+      run(LICENSE_BIN, ["keygen"], { encoding: "utf8" }).trim().split("\n").map((l) => l.split("="))
+    );
+    const token = run(LICENSE_BIN, ["issue", "--customer", "evm-test", "--plan", "pay-per-proof", "--days", "1"], {
+      encoding: "utf8",
+      env: { ...process.env, ZENO_LICENSE_PRIVATE_KEY: keys.ZENO_LICENSE_PRIVATE_KEY },
+    }).trim();
+    const port = 18000 + (process.pid % 1000);
+    const ptau = process.env.ZENO_PTAU ?? path.join(ROOT, "crates/evm-verifier/fixtures/pot7_test.ptau");
+    const server = spawn(SERVER_BIN, [], {
+      env: {
+        ...process.env,
+        ZENO_LICENSE_PUBLIC_KEY: keys.ZENO_LICENSE_PUBLIC_KEY,
+        ZENO_PTAU_PATH: ptau,
+        ZENO_BIND: `127.0.0.1:${port}`,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let serverLog = "";
+    server.stderr.on("data", (d) => (serverLog += d));
+    try {
+      const url = `http://127.0.0.1:${port}`;
+      for (let i = 0; ; i++) {
+        try {
+          if ((await fetch(`${url}/healthz`)).ok) break;
+        } catch {}
+        if (i > 600) throw new Error(`the Cloud Prover did not start:\n${serverLog}`);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const api = async (route, body) => {
+        const res = await fetch(url + route, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body,
+        });
+        const text = await res.text();
+        assert.ok(res.ok, `${route}: HTTP ${res.status} ${text}`);
+        return JSON.parse(text);
+      };
+      const created = await api("/v1/sessions?z0=3&mode=universal", fs.readFileSync(path.join(CIRCOM, "step.r1cs")));
+      const openedA = await call(prover, created.open_session);
+      assert.ok(openedA.ok, "openSession with the API's calldata");
+
+      const witnessCalculator = require(path.join(CIRCOM, "witness_calculator.js"));
+      const calc = await witnessCalculator(fs.readFileSync(path.join(CIRCOM, "step.wasm")));
+      const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+      let z = 3n;
+      const N = 3;
+      for (let i = 0; i < N; i++) {
+        const secret = BigInt(21 + i);
+        const wtns = await calc.calculateWTNSBin({ step_in: [z.toString()], secret: secret.toString() }, 0);
+        await api(`/v1/fold-step?session=${created.session_id}`, wtns);
+        z = (z * z * z + z + secret) % P;
+      }
+      const fin = await api(`/v1/finalize-evm?session=${created.session_id}&onchain=${openedA.ret}`);
+      assert.equal(fin.batch_steps, N);
+      assert.ok((await call(prover, fin.verifyFoldedProofBatch, FEE * BigInt(N))).ok, "the API's batch reverted");
+      const decidedA = await call(prover, fin.finalizeUniversal);
+      assert.ok(decidedA.ok, "the API's finalizeUniversal reverted");
+      const after = await readAccumulator("0x" + sel["getAccumulator(bytes32)"] + openedA.ret.slice(2));
+      assert.equal(after.decided, true);
+      assert.deepEqual(after.state.map(BigInt), [z]);
+      extraSteps += N;
+      console.log(`Circom -> API -> EVM : ${N} steps through the Cloud Prover, finalizeUniversal ${decidedA.gas} gas, decided`);
+    } finally {
+      server.kill();
+    }
   }
 
   // --- Protocol fee -----------------------------------------------------------

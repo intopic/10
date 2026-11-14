@@ -42,6 +42,26 @@ Ndërtimi dhe testimi (`ZENO_TEST_LICENSE` është një licencë zhvillimi):
 node sdk/wasm/test/ivc.test.cjs
 ```
 
+## Verifikim në zinxhir nga pajisja (mënyra B)
+
+Një wallet ose aplikacion e bën provën në pajisje dhe e dërgon vetë te
+`ZenoLlullVerifier.sol`, pa API; dëshmitë nuk largohen nga pajisja.
+
+```js
+const { ZenoLlullOnChainProver } = require("@zenollull/wasm-sdk");
+
+const p = new ZenoLlullOnChainProver(licenseKey, r1csBytes, ptauBytes, ["3"]);
+// dërgo p.openSessionCalldata() → kontrata kthen sessionId (bytes32)
+p.proveStep(wtns0); p.proveStep(wtns1);
+// dërgo p.takeCalldata(sessionId) me value = protocolFee × (hapat e marrë)
+// dërgo p.finalize(sessionId)     me value = protocolFee
+```
+
+`ptauBytes` është skedari i një ceremonie publike ose pjesa që i duhet qarkut
+(`zeno-evm trim-ptau`, shpesh disa KB deri në disa MB). `p.vk` është identiteti
+i qarkut në zinxhir: dApp-i pranon vetëm sesione të hapura me `vk`-në e
+publikuar të qarkut. Testi: `sdk/wasm/test/onchain.test.cjs`.
+
 ## Shumë fije në shfletues
 
 Varianti `@zenollull/wasm-sdk/threads` e ekzekuton provuesin mbi një grup Web Worker-ash

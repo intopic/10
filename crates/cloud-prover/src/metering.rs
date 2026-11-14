@@ -35,7 +35,10 @@ use std::{
 pub enum Event {
     Session,
     FoldStep,
+    /// A mode-A proof or a mode-B decision (`finalizeUniversal`).
     Proof,
+    /// A mode-D proof (`finalizeRecursive`), priced on its own.
+    RecursiveProof,
 }
 
 /// Counters of one customer.
@@ -44,6 +47,7 @@ pub struct Usage {
     pub sessions: u64,
     pub fold_steps: u64,
     pub proofs: u64,
+    pub recursive_proofs: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -174,6 +178,7 @@ fn apply(usage: &mut Usage, event: Event) {
         Event::Session => usage.sessions += 1,
         Event::FoldStep => usage.fold_steps += 1,
         Event::Proof => usage.proofs += 1,
+        Event::RecursiveProof => usage.recursive_proofs += 1,
     }
 }
 

@@ -329,6 +329,13 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] **Ura Circom → EVM** (`zeno-evm key | universal | recursive`): `.r1cs` / `.wtns` → calldata e
       `finalizeUniversal` (B) dhe `finalizeRecursive` (D); teste fund-më-fund në EVM me dëshmi nga
       gjeneruesi i Circom-it; `finalizeRecursive` kthehet menjëherë për një pretendim të vendosur
+- [x] **Hapi 3 — verifikim në zinxhir përmes SDK-së dhe API-së**: tarifa `protocolFee` në çdo vendim
+      (`finalize`, `finalizeUniversal`, `finalizeRecursive`) me tavan të pandryshueshëm `maxFee`
+      (`contracts/lib/ZenoFees.sol`); `AlreadyDecided` për një pretendim të vendosur (tarifa kthehet);
+      mënyra B në pajisje (`ZenoLlullOnChainProver` / `OnChainProver`) me `.ptau` të shkurtuar
+      (`zeno-evm trim-ptau`); Cloud API me `ZENO_PTAU_PATH`: `mode=universal|recursive` dhe
+      `POST /v1/finalize-evm` (D në sfond, `202` derisa mbaron); teste fund-më-fund Circom → SDK → EVM,
+      Circom → API → EVM (B dhe D)
 - [x] `Dockerfile` + test tymi në CI kundrejt kontejnerit
 - [ ] Publikimi në NPM / regjistër kontejnerësh (kërkon token të organizatës)
 - [x] SDK native me UniFFI (`crates/mobile-ffi`): një API Rust → lidhje Swift, Kotlin dhe Python;

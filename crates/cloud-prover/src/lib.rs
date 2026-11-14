@@ -2,12 +2,21 @@
 //!
 //! | Method | Path | Body | Result |
 //! |---|---|---|---|
-//! | `POST` | `/v1/sessions?z0=3,5` | Circom `.r1cs` | `{"session_id", "arity"}` |
+//! | `POST` | `/v1/sessions?z0=3,5[&mode=M]` | Circom `.r1cs` | `{"session_id", "arity", "mode"}` (+ `vk`, `open_session` in mode `universal`) |
 //! | `POST` | `/v1/fold-step?session=ID` | Circom `.wtns` of the step | `{"steps", "state"}` |
-//! | `POST` | `/v1/finalize-snark?session=ID` | — | succinct ZK proof (binary) |
+//! | `POST` | `/v1/finalize-snark?session=ID` | — | mode `transparent`: succinct ZK proof (binary) |
+//! | `POST` | `/v1/finalize-evm?session=ID[&onchain=0x…]` | — | modes `universal` / `recursive`: the calldata to send (JSON) |
 //! | `GET` | `/v1/usage` | — | metered usage of the caller |
 //! | `GET` | `/healthz` | — | `ok` |
 //! | `GET` | `/metrics` | — | Prometheus text: sessions, jobs, caches |
+//!
+//! Modes (see [`provers`]): `transparent` (default, mode A, off-chain proof),
+//! `universal` (mode B: the contract folds the steps; `finalize-evm` with the
+//! on-chain session id returns `verifyFoldedProofBatch` and
+//! `finalizeUniversal`), `recursive` (mode D: `finalize-evm` starts the
+//! recursive proof in the background and answers `202` until it returns the
+//! `finalizeRecursive` call). Modes B and D need a reference string loaded at
+//! start (`ZENO_PTAU_PATH`, 2^20 powers for mode D).
 //!
 //! Every `/v1` call carries `Authorization: Bearer <license key>`; the key is
 //! verified against the vendor's public key (see `zeno-license`), so the
@@ -43,6 +52,7 @@
 #![forbid(unsafe_code)]
 
 pub mod metering;
+pub mod provers;
 
 use axum::{
     body::Bytes,
@@ -53,11 +63,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use evm_verifier::kzg::Srs;
 use metering::{Event, Meter};
+use provers::{Cached, Mode, Params, Prover};
 use rand::RngCore;
 use sdk_bindings::{
     circom::{CircuitLimits, SdkError},
-    CircomIvc, CircomParams, Fr,
+    onchain::{parse_session, to_hex},
+    Fr,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -65,7 +78,7 @@ use std::{
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard, TryLockError, Weak},
+    sync::{Arc, Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant, SystemTime},
 };
 use tokio::sync::Semaphore;
@@ -84,8 +97,11 @@ pub struct Limits {
     /// Largest number of constraints a step circuit may declare.
     pub max_constraints: usize,
     /// How long a finished proof can be fetched again (unbilled) by
-    /// repeating `finalize-snark` for its session.
+    /// repeating `finalize-snark` / `finalize-evm` for its session.
     pub proof_retention: Duration,
+    /// Recursive (mode D) proofs running at the same time; each takes
+    /// about 2 GB of memory and tens of seconds.
+    pub max_recursive_jobs: usize,
 }
 
 impl Default for Limits {
@@ -98,6 +114,7 @@ impl Default for Limits {
             max_wires: 1 << 20,
             max_constraints: 1 << 20,
             proof_retention: Duration::from_secs(10 * 60),
+            max_recursive_jobs: 1,
         }
     }
 }
@@ -107,15 +124,20 @@ impl Default for Limits {
 struct Entry {
     customer: String,
     last_used: Instant,
-    ivc: Option<Arc<Mutex<CircomIvc>>>,
+    ivc: Option<Arc<Mutex<Prover>>>,
+    /// A recursive proof of this session is running in the background.
+    proving: bool,
 }
 
-/// A proof that was delivered (and billed), kept for a while so that it can
-/// be fetched again.
+/// The answer of a finalization (a proof, or the calldata to send; or why
+/// it failed), kept for a while so that it can be fetched again unbilled.
 struct Finished {
     customer: String,
     steps: u64,
-    proof: Arc<Vec<u8>>,
+    status: StatusCode,
+    /// `application/octet-stream` (mode A proof) or JSON.
+    json: bool,
+    body: Arc<Vec<u8>>,
     at: Instant,
 }
 
@@ -126,26 +148,51 @@ pub struct AppState {
     /// Held only for map operations, never while proving and never while
     /// waiting for a session.
     sessions: Mutex<HashMap<String, Entry>>,
-    /// Proofs of finished sessions, by session id.
+    /// Answers of finished sessions, by session id.
     finished: Mutex<HashMap<String, Finished>>,
-    /// Parameters of the circuits in use, by SHA-256 of the `.r1cs`. Weak:
-    /// a circuit's parameters live as long as one of its sessions does.
-    circuits: Mutex<HashMap<[u8; 32], Weak<CircomParams>>>,
+    /// Parameters of the circuits in use, by SHA-256 of the `.r1cs` and
+    /// mode. Weak: they live as long as one of their sessions does.
+    circuits: Mutex<HashMap<([u8; 32], Mode), Cached>>,
     pub meter: Mutex<Meter>,
     jobs: Arc<Semaphore>,
+    recursive_jobs: Arc<Semaphore>,
+    /// The reference string of modes B and D, loaded once at start.
+    srs: Option<Arc<Srs>>,
 }
 
 impl AppState {
+    /// A service for mode A only.
     pub fn new(vendor_public_key: [u8; 32], limits: Limits, meter: Meter) -> Arc<Self> {
+        Self::with_reference_string(vendor_public_key, limits, meter, None)
+    }
+
+    /// A service that also runs the EVM modes over `srs` (shared by every
+    /// session; mode D needs 2^20 powers).
+    pub fn with_reference_string(
+        vendor_public_key: [u8; 32],
+        limits: Limits,
+        meter: Meter,
+        srs: Option<Arc<Srs>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             vendor_public_key,
             jobs: Arc::new(Semaphore::new(limits.max_parallel_jobs.max(1))),
+            recursive_jobs: Arc::new(Semaphore::new(limits.max_recursive_jobs.max(1))),
             limits,
             sessions: Mutex::new(HashMap::new()),
             finished: Mutex::new(HashMap::new()),
             circuits: Mutex::new(HashMap::new()),
             meter: Mutex::new(meter),
+            srs,
         })
+    }
+
+    /// Recursive proofs running now.
+    pub fn running_recursive_jobs(&self) -> usize {
+        self.limits
+            .max_recursive_jobs
+            .max(1)
+            .saturating_sub(self.recursive_jobs.available_permits())
     }
 
     /// Number of session slots (ready or being built), for tests and
@@ -156,10 +203,7 @@ impl AppState {
 
     /// Number of circuits whose parameters are in memory.
     pub fn circuit_count(&self) -> usize {
-        lock(&self.circuits)
-            .values()
-            .filter(|p| p.strong_count() > 0)
-            .count()
+        lock(&self.circuits).values().filter(|c| c.alive()).count()
     }
 
     /// Number of finished proofs still available for fetching again.
@@ -181,24 +225,28 @@ impl AppState {
     /// created.
     pub fn sweep(&self) {
         let timeout = self.limits.session_idle_timeout;
-        // A slot still being built is never idle: its job holds it.
-        lock(&self.sessions).retain(|_, e| e.ivc.is_none() || e.last_used.elapsed() < timeout);
+        // A slot still being built, or with a proof running, is never idle.
+        lock(&self.sessions)
+            .retain(|_, e| e.ivc.is_none() || e.proving || e.last_used.elapsed() < timeout);
         let retention = self.limits.proof_retention;
         lock(&self.finished).retain(|_, f| f.at.elapsed() < retention);
-        lock(&self.circuits).retain(|_, p| p.strong_count() > 0);
+        lock(&self.circuits).retain(|_, c| c.alive());
     }
 
-    /// The parameters of a circuit, shared with every session of the same
-    /// `.r1cs`, or derived (and remembered) if no session uses it.
-    fn circuit(&self, r1cs: &[u8], limits: CircuitLimits) -> Result<Arc<CircomParams>, SdkError> {
+    /// The parameters of a circuit for `mode`, shared with every session of
+    /// the same `.r1cs` and mode, or derived (and remembered).
+    fn circuit(&self, mode: Mode, r1cs: &[u8], limits: CircuitLimits) -> Result<Params, SdkError> {
         let id: [u8; 32] = Sha256::digest(r1cs).into();
-        if let Some(params) = lock(&self.circuits).get(&id).and_then(Weak::upgrade) {
+        if let Some(params) = lock(&self.circuits)
+            .get(&(id, mode))
+            .and_then(Params::from_cache)
+        {
             return Ok(params);
         }
         // Derived without holding the lock; two first sessions of the same
         // circuit at once may both derive it, and the later one is kept.
-        let params = Arc::new(CircomParams::setup_with_limits(r1cs, limits)?);
-        lock(&self.circuits).insert(id, Arc::downgrade(&params));
+        let params = Params::derive(mode, r1cs, limits, self.srs.as_deref())?;
+        lock(&self.circuits).insert((id, mode), params.cache());
         Ok(params)
     }
 }
@@ -238,6 +286,7 @@ impl From<SdkError> for ApiError {
             SdkError::Ivc(_) => StatusCode::UNPROCESSABLE_ENTITY,
             SdkError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             SdkError::QuotaExceeded { .. } => StatusCode::FORBIDDEN,
+            SdkError::Evm(_) => StatusCode::UNPROCESSABLE_ENTITY,
             _ => StatusCode::BAD_REQUEST,
         };
         Self(status, e.to_string())
@@ -340,7 +389,7 @@ fn find_session(
     state: &AppState,
     claims: &Claims,
     query: &HashMap<String, String>,
-) -> Result<(String, Arc<Mutex<CircomIvc>>), ApiError> {
+) -> Result<(String, Arc<Mutex<Prover>>), ApiError> {
     let id = query
         .get("session")
         .ok_or_else(|| bad_request("missing `session` query parameter"))?;
@@ -356,6 +405,12 @@ fn find_session(
             "the session is still being created".into(),
         )
     })?;
+    if entry.proving {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "the session's recursive proof is running".into(),
+        ));
+    }
     entry.last_used = Instant::now();
     Ok((id.clone(), ivc))
 }
@@ -366,8 +421,8 @@ fn find_session(
 fn with_session<T>(
     state: &AppState,
     id: &str,
-    ivc: &Mutex<CircomIvc>,
-    work: impl FnOnce(&mut CircomIvc) -> Result<T, ApiError>,
+    ivc: &Mutex<Prover>,
+    work: impl FnOnce(&mut Prover) -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
     let mut guard = match ivc.try_lock() {
         Ok(guard) => guard,
@@ -410,6 +465,12 @@ async fn create_session(
         })
         .collect::<Result<Vec<Fr>, _>>()?;
     let arity = z0.len();
+    let mode = Mode::parse(query.get("mode").map(String::as_str)).map_err(|e| bad_request(&e))?;
+    if mode != Mode::Transparent && state.srs.is_none() {
+        return Err(bad_request(
+            "EVM modes are not enabled on this service (it has no reference string)",
+        ));
+    }
 
     // Reserve a slot first: the count and the reservation are one step.
     let mut id_bytes = [0u8; 16];
@@ -434,6 +495,7 @@ async fn create_session(
                 customer: claims.customer.clone(),
                 last_used: Instant::now(),
                 ivc: None,
+                proving: false,
             },
         );
     }
@@ -443,11 +505,11 @@ async fn create_session(
         max_constraints: state.limits.max_constraints,
     };
     let (shared, session_id) = (state.clone(), id.clone());
-    let built = job(&state, move || {
+    let built: Result<Option<(String, String)>, ApiError> = job(&state, move || {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let ivc = CircomIvc::with_params(shared.circuit(&body, limits)?, z0)?;
+            let prover = shared.circuit(mode, &body, limits)?.start(z0)?;
             bill(&shared, &claims.customer, Event::Session)?;
-            Ok(ivc)
+            Ok(prover)
         }))
         .unwrap_or_else(|_| {
             Err(ApiError(
@@ -457,14 +519,21 @@ async fn create_session(
         });
         let mut sessions = lock(&shared.sessions);
         match result {
-            Ok(ivc) => {
+            Ok(prover) => {
+                // Mode B: what the client needs to open the session on-chain.
+                let onchain = match &prover {
+                    Prover::Universal(p) => {
+                        Some((to_hex(&p.vk()), to_hex(&p.open_session_calldata())))
+                    }
+                    _ => None,
+                };
                 // The slot may have been evicted meanwhile; then the session
                 // simply does not exist.
                 if let Some(entry) = sessions.get_mut(&session_id) {
-                    entry.ivc = Some(Arc::new(Mutex::new(ivc)));
+                    entry.ivc = Some(Arc::new(Mutex::new(prover)));
                     entry.last_used = Instant::now();
                 }
-                Ok(())
+                Ok(onchain)
             }
             Err(e) => {
                 sessions.remove(&session_id);
@@ -473,16 +542,20 @@ async fn create_session(
         }
     })
     .await;
-    if let Err(e) = built {
-        // Also when the job never started (no capacity).
-        remove_session(&state, &id);
-        return Err(e);
+    let onchain = match built {
+        Ok(onchain) => onchain,
+        Err(e) => {
+            // Also when the job never started (no capacity).
+            remove_session(&state, &id);
+            return Err(e);
+        }
+    };
+    let mut body = json!({ "session_id": id, "arity": arity, "mode": mode.name() });
+    if let Some((vk, open)) = onchain {
+        body["vk"] = vk.into();
+        body["open_session"] = open.into();
     }
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "session_id": id, "arity": arity })),
-    )
-        .into_response())
+    Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
 async fn fold_step(
@@ -497,11 +570,11 @@ async fn fold_step(
         with_session(&shared, &id, &session, |ivc| {
             // The license's quota: steps one prover (session) may fold.
             if let Some(max_steps) = claims.max_steps {
-                if ivc.acc.i >= max_steps {
+                if ivc.steps() >= max_steps {
                     return Err(SdkError::QuotaExceeded { max_steps }.into());
                 }
             }
-            ivc.prove_step(&body, &mut rand::rngs::OsRng)?;
+            ivc.prove_step(&body)?;
             Ok(())
         })?;
         // The step is folded: it is billed here, in the job, whether or not
@@ -511,13 +584,10 @@ async fn fold_step(
             remove_session(&shared, &id);
             return Err(e);
         }
-        with_session(&shared, &id, &session, |ivc| {
-            Ok((ivc.acc.i, ivc.acc.zi.clone()))
-        })
+        with_session(&shared, &id, &session, |ivc| Ok((ivc.steps(), ivc.state())))
     })
     .await?;
-    let state_strings: Vec<String> = zi.iter().map(|z| z.to_string()).collect();
-    Ok(Json(json!({ "steps": steps, "state": state_strings })).into_response())
+    Ok(Json(json!({ "steps": steps, "state": zi })).into_response())
 }
 
 async fn finalize_snark(
@@ -527,21 +597,22 @@ async fn finalize_snark(
 ) -> Result<Response, ApiError> {
     // A proof already delivered for this session is handed out again,
     // unbilled, while it is retained.
-    if let Some(id) = query.get("session") {
-        let retained = lock(&state.finished)
-            .get(id)
-            .filter(|f| f.customer == claims.customer)
-            .map(|f| (f.steps, f.proof.clone()));
-        if let Some((steps, proof)) = retained {
-            return Ok(proof_response(steps, &proof, true));
-        }
+    if let Some(response) = retained(&state, &claims, &query, false) {
+        return Ok(response);
     }
     let (id, session) = find_session(&state, &claims, &query)?;
     let shared = state.clone();
     let customer = claims.customer.clone();
     let (steps, proof) = job(&state, move || {
-        let (steps, proof) = with_session(&shared, &id, &session, |ivc| {
-            Ok((ivc.acc.i, ivc.finalize(&mut rand::rngs::OsRng)?))
+        let (steps, proof) = with_session(&shared, &id, &session, |prover| match prover {
+            Prover::Transparent(ivc) => Ok((ivc.acc.i, ivc.finalize(&mut rand::rngs::OsRng)?)),
+            other => Err(ApiError(
+                StatusCode::CONFLICT,
+                format!(
+                    "a {} session is finalized with /v1/finalize-evm",
+                    other.mode().name()
+                ),
+            )),
         })?;
         // No proof leaves the service unbilled; the session stays open so
         // that the request can be repeated.
@@ -550,26 +621,71 @@ async fn finalize_snark(
         // while, so that a client that lost the answer can fetch it again,
         // and the session is closed.
         let proof = Arc::new(proof);
-        lock(&shared.finished).insert(
-            id.clone(),
-            Finished {
-                customer,
-                steps,
-                proof: proof.clone(),
-                at: Instant::now(),
-            },
+        retain(
+            &shared,
+            &id,
+            customer,
+            steps,
+            StatusCode::OK,
+            false,
+            proof.clone(),
         );
         remove_session(&shared, &id);
         Ok((steps, proof))
     })
     .await?;
-    Ok(proof_response(steps, &proof, false))
+    Ok(answer(StatusCode::OK, steps, false, &proof, false))
 }
 
-fn proof_response(steps: u64, proof: &[u8], repeated: bool) -> Response {
+/// Keeps a finalization's answer for [`Limits::proof_retention`].
+fn retain(
+    state: &AppState,
+    id: &str,
+    customer: String,
+    steps: u64,
+    status: StatusCode,
+    json: bool,
+    body: Arc<Vec<u8>>,
+) {
+    lock(&state.finished).insert(
+        id.to_string(),
+        Finished {
+            customer,
+            steps,
+            status,
+            json,
+            body,
+            at: Instant::now(),
+        },
+    );
+}
+
+/// The retained answer of the session in `query`, if any (of the right
+/// kind: a binary proof, or JSON calldata).
+fn retained(
+    state: &AppState,
+    claims: &Claims,
+    query: &HashMap<String, String>,
+    json: bool,
+) -> Option<Response> {
+    let id = query.get("session")?;
+    let finished = lock(&state.finished);
+    let f = finished
+        .get(id)
+        .filter(|f| f.customer == claims.customer && f.json == json)?;
+    Some(answer(f.status, f.steps, f.json, &f.body, true))
+}
+
+fn answer(status: StatusCode, steps: u64, json: bool, body: &[u8], repeated: bool) -> Response {
+    let content_type = if json {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    };
     (
+        status,
         [
-            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_TYPE, content_type.to_string()),
             (
                 header::HeaderName::from_static("x-zeno-steps"),
                 steps.to_string(),
@@ -579,9 +695,144 @@ fn proof_response(steps: u64, proof: &[u8], repeated: bool) -> Response {
                 repeated.to_string(),
             ),
         ],
-        proof.to_vec(),
+        body.to_vec(),
     )
         .into_response()
+}
+
+/// `POST /v1/finalize-evm?session=ID[&onchain=0x…]`: the calldata that
+/// decides a mode-B or mode-D session on-chain (JSON, see [`provers`]).
+///
+/// * `universal`: needs `onchain`, the id the contract returned from
+///   `openSession`; answers at once with `verifyFoldedProofBatch` (the steps
+///   not yet on-chain) and `finalizeUniversal`.
+/// * `recursive`: starts the proof in the background and answers `202`;
+///   repeating the request answers `202` while it runs, then the
+///   `finalizeRecursive` call.
+///
+/// The answer is billed once and retained like a proof.
+async fn finalize_evm(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<Claims>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    if let Some(response) = retained(&state, &claims, &query, true) {
+        return Ok(response);
+    }
+    let running = |id: &str| Json(json!({ "session_id": id, "status": "running" }));
+    // A recursive proof already running for this session.
+    if let Some(id) = query.get("session") {
+        let proving = lock(&state.sessions)
+            .get(id)
+            .filter(|e| e.customer == claims.customer)
+            .is_some_and(|e| e.proving);
+        if proving {
+            return Ok((StatusCode::ACCEPTED, running(id)).into_response());
+        }
+    }
+    let (id, session) = find_session(&state, &claims, &query)?;
+    let mode = match session.try_lock() {
+        Ok(prover) => prover.mode(),
+        Err(_) => {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "the session is busy with another request".into(),
+            ))
+        }
+    };
+    let customer = claims.customer.clone();
+    match mode {
+        Mode::Transparent => Err(ApiError(
+            StatusCode::CONFLICT,
+            "a transparent session is finalized with /v1/finalize-snark".into(),
+        )),
+        Mode::Universal => {
+            let onchain = query.get("onchain").ok_or_else(|| {
+                bad_request(
+                    "missing `onchain`: the session id the contract returned from openSession",
+                )
+            })?;
+            let onchain = parse_session(onchain)?;
+            let shared = state.clone();
+            let (steps, body) = job(&state, move || {
+                let answer = with_session(&shared, &id, &session, |prover| {
+                    Ok((prover.steps(), prover.finalize_universal(&onchain)?))
+                })?;
+                bill(&shared, &customer, Event::Proof)?;
+                let body = Arc::new(answer.1.to_string().into_bytes());
+                retain(
+                    &shared,
+                    &id,
+                    customer,
+                    answer.0,
+                    StatusCode::OK,
+                    true,
+                    body.clone(),
+                );
+                remove_session(&shared, &id);
+                Ok((answer.0, body))
+            })
+            .await?;
+            Ok(answer(StatusCode::OK, steps, true, &body, false))
+        }
+        Mode::Recursive => {
+            let permit = state
+                .recursive_jobs
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| {
+                    ApiError(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "the recursive prover is at capacity; retry shortly".into(),
+                    )
+                })?;
+            if let Some(entry) = lock(&state.sessions).get_mut(&id) {
+                entry.proving = true;
+            }
+            let shared = state.clone();
+            let session_id = id.clone();
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    let mut prover = session.lock().unwrap_or_else(|e| e.into_inner());
+                    let Prover::Recursive(s) = &mut *prover else {
+                        unreachable!("the mode was checked");
+                    };
+                    s.finalize()
+                        .map(|v| (v["steps"].as_u64().unwrap_or_default(), v))
+                }))
+                .unwrap_or_else(|_| Err(SdkError::Evm("prover task failed".into())));
+                let id = session_id;
+                match result {
+                    Ok((steps, value)) => {
+                        let body = Arc::new(value.to_string().into_bytes());
+                        match bill(&shared, &customer, Event::RecursiveProof) {
+                            Ok(()) => {
+                                retain(&shared, &id, customer, steps, StatusCode::OK, true, body);
+                                remove_session(&shared, &id);
+                            }
+                            // Not billed, not delivered: the session stays,
+                            // the client may ask again.
+                            Err(_) => {
+                                if let Some(entry) = lock(&shared.sessions).get_mut(&id) {
+                                    entry.proving = false;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Not billed. The error is kept like an answer; the
+                        // session is closed (its state cannot be proven).
+                        let status = ApiError::from(e);
+                        let body = json!({ "error": status.1 }).to_string().into_bytes();
+                        retain(&shared, &id, customer, 0, status.0, true, Arc::new(body));
+                        remove_session(&shared, &id);
+                    }
+                }
+            });
+            Ok((StatusCode::ACCEPTED, running(&id)).into_response())
+        }
+    }
 }
 
 /// Operator metrics in the Prometheus text format. No customer data.
@@ -612,6 +863,16 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
             "Finished proofs available for fetching again.",
             state.retained_proofs(),
         ),
+        (
+            "zeno_recursive_jobs_running",
+            "Recursive (mode D) proofs running now.",
+            state.running_recursive_jobs(),
+        ),
+        (
+            "zeno_evm_modes",
+            "1 if a reference string is loaded (modes universal and recursive).",
+            usize::from(state.srs.is_some()),
+        ),
     ];
     let mut body = String::new();
     for (name, help, value) in gauges {
@@ -637,6 +898,7 @@ async fn usage(
         "sessions": usage.sessions,
         "fold_steps": usage.fold_steps,
         "proofs": usage.proofs,
+        "recursive_proofs": usage.recursive_proofs,
         "log_head": head,
     }))
     .into_response())
@@ -649,6 +911,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/sessions", post(create_session))
         .route("/v1/fold-step", post(fold_step))
         .route("/v1/finalize-snark", post(finalize_snark))
+        .route("/v1/finalize-evm", post(finalize_evm))
         .route("/v1/usage", get(usage))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

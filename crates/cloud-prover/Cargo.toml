@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 sdk-bindings = { path = "../sdk-bindings", features = ["parallel"] }
+evm-verifier = { path = "../evm-verifier", default-features = false, features = ["parallel", "batch-affine-msm"] }
+zeno-ivc = { path = "../zeno-ivc", default-features = false, features = ["parallel"] }
 zeno-license = { path = "../zeno-license", default-features = false }
 ark-ff.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }

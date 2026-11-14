@@ -66,7 +66,11 @@ verifikon në zinxhir që akumulatori përfundimtar është i kënaqshëm. Angaz
 janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxhir
 është lineare në numrin e hapave. Nga një qark Circom: `zeno-evm key` (vk dhe
 `openSession`) dhe `zeno-evm universal` (calldata e palosjes dhe e
-`finalizeUniversal` nga skedarët `.r1cs` / `.wtns`).
+`finalizeUniversal` nga skedarët `.r1cs` / `.wtns`). **Në pajisje** (wallet,
+shfletues, telefon): `ZenoLlullOnChainProver` në WASM dhe `OnChainProver` në
+Swift/Kotlin/Python prodhojnë të njëjtat thirrje pa API, dhe dëshmitë nuk
+largohen nga pajisja; mjafton `.ptau`-ja e shkurtuar e qarkut (`zeno-evm
+trim-ptau`). Edhe përmes Cloud API-së: `mode=universal`.
 
 **C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
 çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme. Nuk
@@ -83,10 +87,20 @@ jashtë zinxhirit; kontrata vendos gjendjen përfundimtare me një thirrje, me
 kosto **të pavarur nga N** (3.64 M gas). Reference string: `.ptau` publike me
 2^20 fuqi. Nuk ka çelësa për qark. Sistemi identifikohet me `keccak256(vk
 primar ‖ vk mbyllës ‖ hash i matricave CycleFold)`, që kushdo e rillogarit.
-Nga një qark Circom: `zeno-evm recursive` jep thirrjen `finalizeRecursive`. Një
-pretendim i vendosur më parë kthehet menjëherë (pa riverifikim) kur dërgohet sërish.
+Nga një qark Circom: `zeno-evm recursive` ose Cloud API me `mode=recursive`
+(jo në pajisje: rreth 2 GB RAM). Një pretendim i vendosur më parë refuzohet me
+`AlreadyDecided` pas rreth 8k gaz, kështu që tarifa i kthehet dërguesit.
 
-**Mjeti `zeno-evm`** (`crates/evm-verifier/src/bin/zeno-evm.rs`) është mjeti i
+**Tarifat.** `ZenoLlullVerifier` merr `protocolFee` për çdo hap dhe për çdo
+finalizim (`finalize`, `finalizeUniversal`); `ZenoRecursiveVerifier` për çdo
+`finalizeRecursive`. Të dyja trashëgojnë `contracts/lib/ZenoFees.sol`: pronari
+ndryshon tarifën dhe tërheq fondet, por kurrë mbi `maxFee`, të fiksuar në
+vendosje, dhe nuk prek asgjë nga verifikimi. Konstruktorët:
+`ZenoLlullVerifier(fee, maxFee, decider)`, `ZenoRecursiveVerifier(decider,
+fee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
+regjistrimin në kontratën tonë.
+
+**Mjeti `zeno-evm`** (`crates/zeno-evm`) është mjeti i
 prodhimit për mënyrat B dhe D: merr të njëjtët skedarë Circom si SDK-ja dhe
 Cloud Prover, kontrollon çdo dëshmi (vazhdimësinë e gjendjes dhe kufizimet)
 para provimit dhe përdor rastësinë e sistemit operativ. `zeno-evm-fixture`
@@ -185,7 +199,14 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   Sesionet e të njëjtit `.r1cs` ndajnë parametrat; një detyrë në sfond pastron
   çdo minutë sesionet joaktive, provat e skaduara dhe qarqet e papërdorura.
   `GET /metrics` (Prometheus, pa licencë, pa të dhëna klientësh) jep sesionet,
-  punët dhe cache-t: ekspozoje vetëm në rrjetin e operatorit. Sesionet janë në
+  punët dhe cache-t: ekspozoje vetëm në rrjetin e operatorit.
+  **Mënyrat EVM** ndizen me `ZENO_PTAU_PATH` (ngarkohet dhe kontrollohet një
+  herë në nisje, `Arc<Srs>` e përbashkët): `POST /v1/sessions?mode=universal`
+  kthen `vk` dhe `open_session`; `POST /v1/finalize-evm?session=ID&onchain=0x…`
+  kthen `verifyFoldedProofBatch` + `finalizeUniversal`. Me `mode=recursive`
+  (2^20 fuqi), `finalize-evm` nis provën në sfond dhe kthen `202` derisa jep
+  `finalizeRecursive` (`ZENO_MAX_RECURSIVE_JOBS`, parazgjedhje 1; rreth 2 GB
+  secila). Faturimi: `proof` për B, `recursive-proof` për D. Sesionet janë në
   RAM: pas një rinisjeje klienti rifillon (ose vazhdon nga gjendja e ruajtur me
   SDK-në). Me disa kontejnerë, balancuesi duhet të mbajë afinitet sipas
   `session`.
@@ -297,13 +318,16 @@ cargo test --release -p evm-verifier --test closing_decider --test recursive -- 
 ```
 
 ```bash
-cargo build --release -p evm-verifier && node contracts/test/recursive.test.cjs
+cargo build --release -p evm-verifier -p zeno-evm -p cloud-prover -p zeno-license && node contracts/test/recursive.test.cjs
 ```
 
 Të dy testet e EVM-së kalojnë edhe një qark të vërtetë Circom
 (`crates/sdk-bindings/fixtures/step.circom`, dëshmi nga gjeneruesi i Circom-it)
-nëpër `zeno-evm` deri te `finalizeUniversal` dhe `finalizeRecursive` (ky i
-fundit vetëm me `ZENO_PTAU`). Me dorë:
+deri te `finalizeUniversal` dhe `finalizeRecursive` (ky i fundit vetëm me
+`ZENO_PTAU`), dy herë: nëpër `zeno-evm` dhe nëpër Cloud Prover-in e vërtetë
+(`zenollull-cloud-prover` me `ZENO_PTAU_PATH`). Mënyra B nga SDK-ja WASM, si e
+përdor një wallet, testohet te `sdk/wasm/test/onchain.test.cjs` (kërkon
+`npm ci --prefix contracts`). Me dorë:
 
 ```bash
 ./target/release/zeno-evm key --r1cs step.r1cs --ptau ppot_0080_18.ptau --z0 3
@@ -315,6 +339,10 @@ fundit vetëm me `ZENO_PTAU`). Me dorë:
 
 ```bash
 ./target/release/zeno-evm recursive --r1cs step.r1cs --ptau ppot_0080_20.ptau --z0 3 --wtns step0.wtns step1.wtns
+```
+
+```bash
+./target/release/zeno-evm trim-ptau --r1cs step.r1cs --ptau ppot_0080_18.ptau --out step.ptau
 ```
 
 SDK-të:

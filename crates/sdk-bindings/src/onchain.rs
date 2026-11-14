@@ -53,11 +53,39 @@ pub fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// The device-side prover of mode B for one session.
+/// A circuit prepared for mode B: its parameters and universal key, shared
+/// by every session of the circuit.
+pub struct OnChainCircuit {
+    pub r1cs: CircomR1cs<Fr>,
+    pub params: EvmParams,
+    pub key: CircuitKey,
+}
+
+impl OnChainCircuit {
+    /// Commits to the circuit over `srs` (which must hold at least
+    /// [`Self::srs_len`] powers).
+    pub fn new(r1cs: CircomR1cs<Fr>, srs: &Srs) -> Result<Self, SdkError> {
+        let shape = r1cs.folding_shape();
+        let need = Dims::of(&shape).srs_len();
+        if srs.powers_g1.len() < need {
+            return Err(SdkError::Evm(format!(
+                "the reference string has {} powers, the circuit needs {need}",
+                srs.powers_g1.len()
+            )));
+        }
+        let (params, key) = EvmParams::setup_universal(shape, CIRCOM_UNIVERSAL_LABEL, srs);
+        Ok(Self { r1cs, params, key })
+    }
+
+    /// Powers of τ the circuit needs.
+    pub fn srs_len(r1cs: &CircomR1cs<Fr>) -> usize {
+        Dims::of(&r1cs.folding_shape()).srs_len()
+    }
+}
+
+/// The prover of mode B for one session.
 pub struct OnChainProver {
-    r1cs: CircomR1cs<Fr>,
-    params: EvmParams,
-    key: CircuitKey,
+    circuit: std::sync::Arc<OnChainCircuit>,
     /// `None` once finalized.
     folder: Option<OnChainFolder>,
     z0: Vec<Fr>,
@@ -66,7 +94,9 @@ pub struct OnChainProver {
     pending: Vec<StepProof>,
     /// Steps folded so far (kept after finalization).
     folded: u64,
-    license: String,
+    /// Checked at every step and at finalization when set (the SDK); a
+    /// service checks the caller's license itself.
+    license: Option<String>,
     quota: Option<u64>,
 }
 
@@ -81,40 +111,52 @@ impl OnChainProver {
     pub fn new(license: &str, r1cs: &[u8], ptau: &[u8], z0: &[String]) -> Result<Self, SdkError> {
         let quota = claims(license)?.max_steps;
         let r1cs = CircomR1cs::<Fr>::parse(r1cs)?;
-        let z0 = parse_state(z0)?;
-        if z0.len() != r1cs.num_outputs {
+        let srs = Srs::from_ptau(ptau, OnChainCircuit::srs_len(&r1cs), &mut rand::rngs::OsRng)
+            .map_err(|e| SdkError::Evm(e.to_string()))?;
+        let circuit = std::sync::Arc::new(OnChainCircuit::new(r1cs, &srs)?);
+        let mut prover = Self::start(circuit, parse_state(z0)?)?;
+        prover.license = Some(license.to_string());
+        prover.quota = quota;
+        Ok(prover)
+    }
+
+    /// A session of a prepared circuit at state `z0`, without a license
+    /// check of its own (for services that authenticate their callers).
+    pub fn start(circuit: std::sync::Arc<OnChainCircuit>, z0: Vec<Fr>) -> Result<Self, SdkError> {
+        if z0.len() != circuit.r1cs.num_outputs {
             return Err(SdkError::BadInterface {
-                outputs: r1cs.num_outputs,
+                outputs: circuit.r1cs.num_outputs,
                 public_inputs: z0.len(),
             });
         }
-        let shape = r1cs.folding_shape();
-        let srs = Srs::from_ptau(ptau, Dims::of(&shape).srs_len(), &mut rand::rngs::OsRng)
-            .map_err(|e| SdkError::Evm(e.to_string()))?;
-        let (params, key) = EvmParams::setup_universal(shape, CIRCOM_UNIVERSAL_LABEL, &srs);
-        let folder = OnChainFolder::new(&params);
+        let folder = OnChainFolder::new(&circuit.params);
         Ok(Self {
-            r1cs,
-            params,
-            key,
+            circuit,
             folder: Some(folder),
             state: z0.clone(),
             z0,
             pending: Vec::new(),
             folded: 0,
-            license: license.to_string(),
-            quota,
+            license: None,
+            quota: None,
         })
+    }
+
+    fn check_license(&self) -> Result<(), SdkError> {
+        match &self.license {
+            Some(license) => claims(license).map(|_| ()),
+            None => Ok(()),
+        }
     }
 
     /// The circuit's on-chain identity: `keccak256` of its universal key.
     pub fn vk(&self) -> Word {
-        self.params.vk
+        self.circuit.params.vk
     }
 
     /// `openSession(vk, z0)`; the contract returns the session id.
     pub fn open_session_calldata(&self) -> Vec<u8> {
-        abi::open_session(&self.params.vk, &self.z0)
+        abi::open_session(&self.circuit.params.vk, &self.z0)
     }
 
     fn folder(&mut self) -> Result<&mut OnChainFolder, SdkError> {
@@ -126,32 +168,33 @@ impl OnChainProver {
     /// Folds one more step locally, given its Circom witness. The step goes
     /// on-chain with the next [`Self::take_calldata`].
     pub fn prove_step(&mut self, wtns: &[u8]) -> Result<(), SdkError> {
-        claims(&self.license)?;
+        self.check_license()?;
         self.folder()?;
         if let Some(max_steps) = self.quota {
             if self.folded >= max_steps {
                 return Err(SdkError::QuotaExceeded { max_steps });
             }
         }
+        let r1cs = &self.circuit.r1cs;
         let wires = parse_wtns::<Fr>(wtns)?;
-        let step = self.r1cs.step(Some(wires));
+        let step = r1cs.step(Some(wires));
         let wires = step.assignment.as_ref().expect("just set");
-        if wires.len() != self.r1cs.num_wires {
+        if wires.len() != r1cs.num_wires {
             return Err(SdkError::WitnessLength {
-                expected: self.r1cs.num_wires,
+                expected: r1cs.num_wires,
                 got: wires.len(),
             });
         }
-        let k = self.r1cs.num_outputs;
+        let k = r1cs.num_outputs;
         if wires[k + 1..=2 * k] != self.state[..] {
             return Err(SdkError::StateMismatch);
         }
         if let Some(constraint) = step.first_unsatisfied(wires) {
             return Err(SdkError::UnsatisfiedWitness { constraint });
         }
-        let (w, x) = self.r1cs.folding_assignment(wires)?;
+        let (w, x) = r1cs.folding_assignment(wires)?;
         let next = x[k..].to_vec();
-        let params = &self.params;
+        let params = &self.circuit.params;
         let folder = self.folder.as_mut().expect("checked above");
         let proof = folder
             .fold_step(params, w, x, &mut rand::rngs::OsRng)
@@ -185,7 +228,7 @@ impl OnChainProver {
     /// `finalizeUniversal` call (send it with `protocolFee` wei). Every
     /// folded step must have been taken (and sent) first.
     pub fn finalize(&mut self, session: &Word) -> Result<Vec<u8>, SdkError> {
-        claims(&self.license)?;
+        self.check_license()?;
         if !self.pending.is_empty() {
             return Err(SdkError::Evm(
                 "send the folded steps (take_calldata) before finalizing".into(),
@@ -199,10 +242,11 @@ impl OnChainProver {
             self.folder = Some(folder);
             return Err(SdkError::Evm("no step was folded".into()));
         }
+        let c = &self.circuit;
         let (mask, _, proof) = folder
-            .finalize_universal(&self.params, &self.key, &mut rand::rngs::OsRng)
+            .finalize_universal(&c.params, &c.key, &mut rand::rngs::OsRng)
             .map_err(|e| SdkError::Evm(e.to_string()))?;
-        let key = abi::universal_key(&self.params, &self.key);
+        let key = abi::universal_key(&c.params, &c.key);
         Ok(abi::finalize_universal(
             session,
             &mask,
