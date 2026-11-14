@@ -178,3 +178,87 @@ pub fn wasm_memory_bytes() -> f64 {
         0.0
     }
 }
+
+/// Mode B on the device: the contract (`ZenoLlullVerifier.sol`) folds the
+/// steps and decides the result; this object computes everything it needs
+/// from the Circom files, so witnesses never leave the device.
+///
+/// ```js
+/// const p = new ZenoLlullOnChainProver(licenseKey, r1cs, ptau, ["3"]);
+/// // send p.openSessionCalldata() (value 0) → the contract returns sessionId
+/// p.proveStep(wtns0); p.proveStep(wtns1);
+/// // send p.takeCalldata(sessionId) with value = protocolFee × steps taken
+/// // send p.finalize(sessionId)     with value = protocolFee
+/// ```
+///
+/// `ptau`: a public Powers-of-Tau file, or the prefix this circuit needs
+/// (`zeno-evm trim-ptau`). Accept sessions only for the circuit's published `vk`.
+#[wasm_bindgen]
+pub struct ZenoLlullOnChainProver {
+    inner: crate::onchain::OnChainProver,
+}
+
+#[wasm_bindgen]
+impl ZenoLlullOnChainProver {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        license: &str,
+        r1cs: &[u8],
+        ptau: &[u8],
+        z0: Vec<String>,
+    ) -> Result<ZenoLlullOnChainProver, JsError> {
+        Ok(Self {
+            inner: crate::onchain::OnChainProver::new(license, r1cs, ptau, &z0).map_err(js_err)?,
+        })
+    }
+
+    /// The circuit's `vk` (hex): what the session is opened with.
+    #[wasm_bindgen(getter)]
+    pub fn vk(&self) -> String {
+        crate::onchain::to_hex(&self.inner.vk())
+    }
+
+    /// Calldata of `openSession(vk, z0)`.
+    #[wasm_bindgen(js_name = openSessionCalldata)]
+    pub fn open_session_calldata(&self) -> Vec<u8> {
+        self.inner.open_session_calldata()
+    }
+
+    /// Folds one more step locally, given its Circom witness (`.wtns`).
+    #[wasm_bindgen(js_name = proveStep)]
+    pub fn prove_step(&mut self, wtns: &[u8]) -> Result<(), JsError> {
+        self.inner.prove_step(wtns).map_err(js_err)
+    }
+
+    /// Folded steps not yet taken by `takeCalldata`.
+    #[wasm_bindgen(getter, js_name = pendingSteps)]
+    pub fn pending_steps(&self) -> u32 {
+        self.inner.pending_steps() as u32
+    }
+
+    /// Calldata of `verifyFoldedProofBatch` for the pending steps; send it
+    /// with `protocolFee × pendingSteps` wei.
+    #[wasm_bindgen(js_name = takeCalldata)]
+    pub fn take_calldata(&mut self, session_id: &str) -> Result<Vec<u8>, JsError> {
+        let session = crate::onchain::parse_session(session_id).map_err(js_err)?;
+        self.inner.take_calldata(&session).map_err(js_err)
+    }
+
+    /// Calldata of `finalizeUniversal` (send it with `protocolFee` wei).
+    pub fn finalize(&mut self, session_id: &str) -> Result<Vec<u8>, JsError> {
+        let session = crate::onchain::parse_session(session_id).map_err(js_err)?;
+        self.inner.finalize(&session).map_err(js_err)
+    }
+
+    /// Steps folded so far.
+    #[wasm_bindgen(getter)]
+    pub fn steps(&self) -> f64 {
+        self.inner.steps() as f64
+    }
+
+    /// Current state `z_i` as decimal strings.
+    #[wasm_bindgen(getter)]
+    pub fn state(&self) -> Vec<String> {
+        self.inner.state()
+    }
+}

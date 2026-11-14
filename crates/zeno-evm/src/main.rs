@@ -9,6 +9,7 @@
 //!                    --wtns STEP0.wtns STEP1.wtns …
 //! zeno-evm recursive --r1cs STEP.r1cs --ptau FILE.ptau --z0 3[,5…]
 //!                    --wtns STEP0.wtns STEP1.wtns …
+//! zeno-evm trim-ptau --r1cs STEP.r1cs --ptau FILE.ptau --out STEP.ptau
 //! ```
 //!
 //! * `key` — mode B: the circuit's universal key and `vk` (what a session is
@@ -17,6 +18,10 @@
 //!   (`verifyFoldedProofBatch`) and proves the final accumulator for
 //!   `finalizeUniversal`. Open the session first with the `vk` of `key`
 //!   (the contract returns its id), then pass that id as `--session`.
+//! * `trim-ptau` — mode B on devices: the prefix of a ceremony file that
+//!   the circuit needs (often a few MB instead of hundreds), with its SHA-256
+//!   and the circuit's `vk` to publish next to it. Proving from the trimmed
+//!   file gives the same `vk` as from the full one.
 //! * `recursive` — mode D: runs the CycleFold IVC over the steps off-chain
 //!   and emits one `finalizeRecursive` call (needs a reference string of
 //!   2^20 powers, e.g. the public `ppot_0080_20.ptau`).
@@ -39,10 +44,9 @@ use sdk_bindings::circom::{parse_wtns, CircomR1cs};
 use std::{process::ExitCode, str::FromStr};
 use zeno_ivc::cyclefold::CycleFoldAccumulator;
 
-/// Label of the commitment keys of mode B; part of every circuit's `vk`.
-const UNIVERSAL_LABEL: &[u8] = b"zeno-llull/evm/universal/v1";
-/// Label of the recursive system's parameters; part of its system id.
-const RECURSIVE_LABEL: &[u8] = b"zeno-llull/evm/recursive/v1";
+use evm_verifier::{
+    CIRCOM_RECURSIVE_LABEL as RECURSIVE_LABEL, CIRCOM_UNIVERSAL_LABEL as UNIVERSAL_LABEL,
+};
 
 const USAGE: &str = "\
 zeno-evm — Circom step circuits on the EVM verifiers
@@ -51,6 +55,7 @@ USAGE:
     zeno-evm key       --r1cs FILE --ptau FILE
     zeno-evm universal --r1cs FILE --ptau FILE --z0 A[,B…] --session 0x<64 hex> --wtns FILE…
     zeno-evm recursive --r1cs FILE --ptau FILE --z0 A[,B…] --wtns FILE…
+    zeno-evm trim-ptau --r1cs FILE --ptau FILE --out FILE
 ";
 
 struct Args {
@@ -60,6 +65,7 @@ struct Args {
     z0: Vec<Fr>,
     session: Option<Word>,
     wtns: Vec<String>,
+    out: Option<String>,
 }
 
 fn read(path: &str) -> Result<Vec<u8>, String> {
@@ -71,6 +77,7 @@ fn parse_args() -> Result<Args, String> {
     let command = argv.next().ok_or("missing command")?;
     let (mut r1cs, mut ptau, mut z0, mut session, mut wtns) =
         (None, None, Vec::new(), None, Vec::new());
+    let mut out = None;
     let mut flag: Option<String> = None;
     for arg in argv {
         if arg.starts_with("--") {
@@ -80,6 +87,7 @@ fn parse_args() -> Result<Args, String> {
         match flag.as_deref() {
             Some("--r1cs") => r1cs = Some(read(&arg)?),
             Some("--ptau") => ptau = Some(arg),
+            Some("--out") => out = Some(arg),
             Some("--z0") => {
                 z0 = arg
                     .split(',')
@@ -118,6 +126,7 @@ fn parse_args() -> Result<Args, String> {
         z0,
         session,
         wtns,
+        out,
     })
 }
 
@@ -287,6 +296,27 @@ fn recursive(args: &Args, r1cs: &CircomR1cs<Fr>) -> Result<String, String> {
     ))
 }
 
+fn trim(args: &Args, r1cs: &CircomR1cs<Fr>) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let out = args.out.as_deref().ok_or("missing --out")?;
+    let shape = r1cs.folding_shape();
+    let n = evm_verifier::universal::Dims::of(&shape).srs_len();
+    let full = read(&args.ptau)?;
+    let trimmed =
+        evm_verifier::kzg::trim_ptau(&full, n).map_err(|e| format!("{}: {e}", args.ptau))?;
+    drop(full);
+    // Load what was written, with all the checks a prover will run.
+    let srs = Srs::from_ptau(&trimmed, n, &mut OsRng).map_err(|e| e.to_string())?;
+    let (params, _) = EvmParams::setup_universal(shape, UNIVERSAL_LABEL, &srs);
+    std::fs::write(out, &trimmed).map_err(|e| format!("{out}: {e}"))?;
+    Ok(format!(
+        "{{\"out\":\"{out}\",\"powers\":{n},\"bytes\":{},\"sha256\":\"{}\",\"vk\":\"{}\"}}",
+        trimmed.len(),
+        hex(&Sha256::digest(&trimmed)),
+        hex(&params.vk),
+    ))
+}
+
 fn run() -> Result<String, String> {
     let args = parse_args()?;
     let r1cs = CircomR1cs::<Fr>::parse(&args.r1cs).map_err(|e| format!("--r1cs: {e}"))?;
@@ -294,6 +324,7 @@ fn run() -> Result<String, String> {
         "key" => key(&args, &r1cs),
         "universal" => universal(&args, &r1cs),
         "recursive" => recursive(&args, &r1cs),
+        "trim-ptau" => trim(&args, &r1cs),
         other => Err(format!("unknown command {other}")),
     }
 }

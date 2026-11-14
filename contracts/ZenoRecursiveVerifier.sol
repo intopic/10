@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import {ZenoBn254, ZenoFq} from "./lib/ZenoBn254.sol";
 
 import {ZenoCycleFoldShape} from "./ZenoCycleFoldShape.sol";
+import {ZenoFees} from "./lib/ZenoFees.sol";
 
 /// The batched universal decider, without its final pairing check.
 interface IZenoBatchedDecider {
@@ -34,7 +35,7 @@ interface IZenoBatchedDecider {
 ///    remaining Grumpkin equation and recomputes `u.x = H(vk, i, z₀, zᵢ, U, U_cf)`;
 /// 4. verifies one batched universal decider proof for the masked primary
 ///    accumulator and the closing instance, and checks its pairing equation.
-contract ZenoRecursiveVerifier {
+contract ZenoRecursiveVerifier is ZenoFees {
     /// Order of the BN254 scalar field.
     uint256 internal constant R =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
@@ -61,6 +62,7 @@ contract ZenoRecursiveVerifier {
 
     error MalformedInput();
     error InvalidProof(uint256 step);
+    error AlreadyDecided();
 
     /// Dimensions read from the header of the CycleFold records.
     struct Dims {
@@ -96,7 +98,9 @@ contract ZenoRecursiveVerifier {
         uint256 gamma;
     }
 
-    constructor(IZenoBatchedDecider decider_) {
+    /// @param fee initial `protocolFee` of `finalizeRecursive`; @param maxFee_
+    /// its permanent cap. Fees never affect what is decided.
+    constructor(IZenoBatchedDecider decider_, uint256 fee, uint256 maxFee_) ZenoFees(fee, maxFee_) {
         decider = decider_;
     }
 
@@ -106,9 +110,9 @@ contract ZenoRecursiveVerifier {
         return ZenoCycleFoldShape.HASH;
     }
 
-    /// @notice Decides a final IVC state; reverts if any check fails. A claim
-    /// `(i, z₀, zᵢ)` already decided for this system returns at once, without
-    /// checking the rest of the calldata again (it is already proven).
+    /// @notice Decides a final IVC state; reverts if any check fails. Costs
+    /// `protocolFee` (`msg.value`). A claim `(i, z₀, zᵢ)` already decided for
+    /// this system reverts at once with `AlreadyDecided` (read `decided`).
     /// @param primaryKey universal decider key of the primary circuit (24 words).
     /// @param closingKey universal decider key of the closing circuit (24 words).
     /// @param state `[i, k, z₀[k], zᵢ[k], U(6), u(3), comm_T(2), mask(6),
@@ -122,7 +126,8 @@ contract ZenoRecursiveVerifier {
         uint256[] calldata state,
         uint256[] calldata cfProof,
         uint256[] calldata deciderProof
-    ) external returns (bytes32 systemId) {
+    ) external payable returns (bytes32 systemId) {
+        _chargeFee(1);
         if (primaryKey.length != 24 || closingKey.length != 24) revert MalformedInput();
         // Both universal proofs must be over the same [τ]₂.
         for (uint256 k = 19; k < 23; ++k) {
@@ -135,11 +140,12 @@ contract ZenoRecursiveVerifier {
         Dims memory d = _dims(state.length > 1 ? state[1] : 0);
         Layout memory l = _layout(d);
         if (state.length != l.length || state[0] == 0 || state[0] >= 1 << 64) revert MalformedInput();
-        // A claim decided before is not decided again: the second submission
-        // of the same `(i, z₀, zᵢ)` for this system costs only this lookup.
+        // A claim decided before is not decided (nor paid for) again: the
+        // second submission of the same `(i, z₀, zᵢ)` for this system reverts
+        // after this lookup, and its fee goes back to the sender.
         bytes32 claimHash = keccak256(abi.encodePacked(state[0], state[2:2 + 2 * d.arity]));
         bytes32 claimKey = keccak256(abi.encodePacked(systemId, claimHash));
-        if (decided[claimKey]) return systemId;
+        if (decided[claimKey]) revert AlreadyDecided();
         if (cfProof.length != 3 * d.logM + 4 + 2 * (d.logN + 1) + 1 + 2 * COLS + 2) {
             revert MalformedInput();
         }

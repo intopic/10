@@ -24,9 +24,6 @@ ark-snark = { version = "0.5", default-features = false, optional = true }
 sha2.workspace = true
 sha3.workspace = true
 rayon = { workspace = true, optional = true }
-# The `zeno-evm` tool: Circom files and OS randomness.
-sdk-bindings = { path = "../sdk-bindings", default-features = false, optional = true }
-rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 llull-folder = { path = "../llull-folder", default-features = false, features = ["cli"] }
@@ -46,14 +43,9 @@ parallel = [
     "core-r1cs/parallel",
     "ark-groth16?/parallel",
 ]
-cli = ["llull-folder/cli", "zeno-ivc/cli", "ark-std/std", "dep:sdk-bindings", "dep:rand"]
+cli = ["llull-folder/cli", "zeno-ivc/cli", "ark-std/std"]
 
 [[bin]]
 name = "zeno-evm-fixture"
 path = "src/bin/zeno-evm-fixture.rs"
-required-features = ["cli"]
-
-[[bin]]
-name = "zeno-evm"
-path = "src/bin/zeno-evm.rs"
 required-features = ["cli"]

@@ -42,6 +42,8 @@ pub enum SdkError {
     },
     /// The license key is missing, invalid or expired.
     License(String),
+    /// Mode B (on-chain) errors: reference string, session id, folding.
+    Evm(String),
     /// The license's step quota is used up.
     QuotaExceeded {
         max_steps: u64,
@@ -106,6 +108,7 @@ impl fmt::Display for SdkError {
                 write!(f, "circuit too large: {got} {what}, the limit is {limit}")
             }
             Self::License(reason) => write!(f, "license: {reason}"),
+            Self::Evm(reason) => write!(f, "{reason}"),
             Self::QuotaExceeded { max_steps } => {
                 write!(f, "license quota of {max_steps} steps is used up")
             }

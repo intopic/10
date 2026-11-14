@@ -140,6 +140,67 @@ impl Srs {
     }
 }
 
+/// Number of `[τ^i]₁` powers a `.ptau` file holds (and [`Srs::from_ptau`]
+/// can load), without reading the points.
+pub fn ptau_powers(bytes: &[u8]) -> Result<usize, PtauError> {
+    let sections = ptau_sections(bytes)?;
+    let find = |kind: u32| {
+        sections
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, data)| *data)
+            .ok_or(PtauError::Malformed("missing section"))
+    };
+    let header = find(1)?;
+    if header.len() != 44 {
+        return Err(PtauError::Malformed("unexpected header"));
+    }
+    let power = u32::from_le_bytes(header[36..40].try_into().expect("4 bytes"));
+    if power >= 32 {
+        return Err(PtauError::Malformed("unexpected header"));
+    }
+    Ok((1usize << power).min(find(2)?.len() / 64))
+}
+
+/// The same ceremony file cut down to its first `n` powers in G1 and the
+/// two first powers in G2 (`[1]₂`, `[τ]₂`): everything a prover of a circuit
+/// with `srs_len() ≤ n` needs, a small fraction of the file. The points are
+/// copied byte for byte, so the result is a prefix of the same ceremony and
+/// gives the same circuit keys; [`Srs::from_ptau`] reads it like the
+/// original. Callers should load the result once to check it.
+pub fn trim_ptau(bytes: &[u8], n: usize) -> Result<Vec<u8>, PtauError> {
+    if n == 0 || ptau_powers(bytes)? < n {
+        return Err(PtauError::TooShort {
+            available: ptau_powers(bytes)?,
+        });
+    }
+    let sections = ptau_sections(bytes)?;
+    let find = |kind: u32| {
+        sections
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, data)| *data)
+            .ok_or(PtauError::Malformed("missing section"))
+    };
+    let (header, g1, g2) = (find(1)?, find(2)?, find(3)?);
+    if g2.len() < 256 {
+        return Err(PtauError::Malformed("truncated point section"));
+    }
+    let mut header = header.to_vec();
+    let power = n.next_power_of_two().trailing_zeros();
+    header[36..40].copy_from_slice(&power.to_le_bytes());
+    let mut out = Vec::with_capacity(12 + 3 * 12 + 44 + 64 * n + 256);
+    out.extend_from_slice(b"ptau");
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&3u32.to_le_bytes());
+    for (kind, data) in [(1u32, &header[..]), (2, &g1[..64 * n]), (3, &g2[..256])] {
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        out.extend_from_slice(data);
+    }
+    Ok(out)
+}
+
 /// Errors when loading a `.ptau` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PtauError {
@@ -338,5 +399,24 @@ mod tests {
             assert!(Srs::from_ptau(&PTAU[..cut], 16, &mut rng).is_err());
         }
         assert!(Srs::from_ptau(b"not a ptau file", 16, &mut rng).is_err());
+    }
+
+    #[test]
+    fn a_trimmed_ptau_is_a_prefix_of_the_same_ceremony() {
+        const PTAU: &[u8] = include_bytes!("../fixtures/pot7_test.ptau");
+        let mut rng = test_rng();
+        assert_eq!(ptau_powers(PTAU).unwrap(), 128);
+        let full = Srs::from_ptau(PTAU, 128, &mut rng).unwrap();
+        for n in [1, 20, 64, 128] {
+            let trimmed = trim_ptau(PTAU, n).unwrap();
+            assert!(trimmed.len() < 64 * n + 400);
+            assert_eq!(ptau_powers(&trimmed).unwrap(), n);
+            let srs = Srs::from_ptau(&trimmed, n, &mut rng).unwrap();
+            assert_eq!(srs.powers_g1, full.powers_g1[..n]);
+            assert_eq!(srs.tau_g2, full.tau_g2);
+            assert!(Srs::from_ptau(&trimmed, n + 1, &mut rng).is_err());
+        }
+        assert!(trim_ptau(PTAU, 129).is_err());
+        assert!(trim_ptau(PTAU, 0).is_err());
     }
 }

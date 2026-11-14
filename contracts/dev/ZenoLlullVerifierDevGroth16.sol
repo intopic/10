@@ -21,7 +21,9 @@ contract ZenoLlullVerifierDevGroth16 is ZenoLlullVerifier {
 
     error CircuitAlreadyRegistered();
 
-    constructor(uint256 fee, IZenoUniversalDecider decider) ZenoLlullVerifier(fee, decider) {}
+    constructor(uint256 fee, uint256 maxFee_, IZenoUniversalDecider decider)
+        ZenoLlullVerifier(fee, maxFee_, decider)
+    {}
 
     /// @notice Closes the session like `finalize` and verifies on-chain that
     /// the final accumulator is satisfiable, marking the session `decided`.
@@ -37,7 +39,7 @@ contract ZenoLlullVerifierDevGroth16 is ZenoLlullVerifier {
         bytes calldata maskProof,
         uint256[17] calldata proof,
         uint256[] calldata key
-    ) external {
+    ) external payable {
         Session storage s = _foldMask(sessionId, maskProof);
         bytes32 keyHash = deciderKeyHash[s.vk];
         if (keyHash == bytes32(0) || keccak256(abi.encodePacked(key)) != keyHash) {

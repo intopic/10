@@ -140,6 +140,81 @@ impl Prover {
     }
 }
 
+/// Mode B on the device: calldata for `ZenoLlullVerifier.sol` (folding of
+/// every step and `finalizeUniversal`) computed from the Circom files, so
+/// witnesses never leave the device. `ptau`: a public Powers-of-Tau file or
+/// the prefix this circuit needs (`zeno-evm trim-ptau`).
+#[derive(uniffi::Object)]
+pub struct OnChainProver {
+    inner: Mutex<sdk_bindings::onchain::OnChainProver>,
+}
+
+impl OnChainProver {
+    fn lock(&self) -> MutexGuard<'_, sdk_bindings::onchain::OnChainProver> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[uniffi::export]
+impl OnChainProver {
+    #[uniffi::constructor]
+    pub fn new(
+        license: String,
+        r1cs: Vec<u8>,
+        ptau: Vec<u8>,
+        z0: Vec<String>,
+    ) -> Result<Self, ZenoError> {
+        Ok(Self {
+            inner: Mutex::new(sdk_bindings::onchain::OnChainProver::new(
+                &license, &r1cs, &ptau, &z0,
+            )?),
+        })
+    }
+
+    /// The circuit's `vk` (hex): what the session is opened with.
+    pub fn vk(&self) -> String {
+        sdk_bindings::onchain::to_hex(&self.lock().vk())
+    }
+
+    /// Calldata of `openSession(vk, z0)`.
+    pub fn open_session_calldata(&self) -> Vec<u8> {
+        self.lock().open_session_calldata()
+    }
+
+    /// Folds one more step locally, given its Circom witness (`.wtns`).
+    pub fn prove_step(&self, wtns: Vec<u8>) -> Result<(), ZenoError> {
+        Ok(self.lock().prove_step(&wtns)?)
+    }
+
+    /// Folded steps not yet taken by `take_calldata`.
+    pub fn pending_steps(&self) -> u64 {
+        self.lock().pending_steps() as u64
+    }
+
+    /// Calldata of `verifyFoldedProofBatch` for the pending steps (send it
+    /// with `protocolFee × pending_steps` wei); `session_id` in hex.
+    pub fn take_calldata(&self, session_id: String) -> Result<Vec<u8>, ZenoError> {
+        let session = sdk_bindings::onchain::parse_session(&session_id)?;
+        Ok(self.lock().take_calldata(&session)?)
+    }
+
+    /// Calldata of `finalizeUniversal` (send it with `protocolFee` wei).
+    pub fn finalize(&self, session_id: String) -> Result<Vec<u8>, ZenoError> {
+        let session = sdk_bindings::onchain::parse_session(&session_id)?;
+        Ok(self.lock().finalize(&session)?)
+    }
+
+    /// Steps folded so far.
+    pub fn steps(&self) -> u64 {
+        self.lock().steps()
+    }
+
+    /// Current state `z_i` as decimal strings.
+    pub fn state(&self) -> Vec<String> {
+        self.lock().state()
+    }
+}
+
 /// Verifier for proofs of one step circuit.
 #[derive(uniffi::Object)]
 pub struct Verifier {

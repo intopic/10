@@ -5,12 +5,15 @@
 //!   cycle (Circom's default prime is the BN254 scalar field).
 //! * [`api`]: what every binding shares — the licensed prover, the statement
 //!   of a proof, state conversions.
+//! * [`onchain`]: mode B on the device — calldata for `ZenoLlullVerifier.sol`
+//!   (folding and `finalizeUniversal`) from `.r1cs` / `.wtns` files.
 //! * [`lib_wasm_ffi`]: the WebAssembly / TypeScript API built on top of it.
 #![forbid(unsafe_code)]
 
 pub mod api;
 pub mod circom;
 pub mod lib_wasm_ffi;
+pub mod onchain;
 
 use circom::{parse_wtns, CircomR1cs, CircuitLimits, SdkError};
 use decider_zk::{CompressedIvcProof, ProofFormatError};

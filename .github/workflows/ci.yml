@@ -82,6 +82,11 @@ jobs:
           export ZENO_LICENSE_PRIVATE_KEY
           export ZENO_FOREIGN_LICENSE="$($L issue --customer ci --plan enterprise --days 1)"
           node sdk/wasm/test/ivc.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Mode B from the WASM SDK straight to ZenoLlullVerifier.sol (EVM), no API
+        run: |
+          npm ci --prefix contracts
+          export ZENO_TEST_LICENSE="$(./target/release/zeno-license issue --dev --customer ci --plan enterprise --days 1)"
+          node sdk/wasm/test/onchain.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Multi-threaded build (Web Workers) on nightly
         run: |
           rustup toolchain install nightly --profile minimal --component rust-src --target wasm32-unknown-unknown
@@ -111,7 +116,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cargo build --release -p evm-verifier
+      - run: cargo build --release -p evm-verifier -p zeno-evm
       - run: npm ci
         working-directory: contracts
       - name: Cache the public Powers-of-Tau file (PSE PPoT, 2^18 powers)
@@ -155,7 +160,7 @@ jobs:
         env:
           ZENO_PTAU: ${{ github.workspace }}/ppot_0080_20.ptau
         run: cargo test --release -p evm-verifier --test closing_decider --test recursive -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: cargo build --release -p evm-verifier
+      - run: cargo build --release -p evm-verifier -p zeno-evm
       - run: npm ci
         working-directory: contracts
       - name: finalizeRecursive on the EVM, gas, and forged calldata

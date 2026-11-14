@@ -17,7 +17,8 @@ const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/rele
 const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
 const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const MAX_STEP_GAS = 300_000n;
-const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step
+const FEE = 1_000_000_000_000n; // 1e-6 ether per folded step and per finalization
+const MAX_FEE = 10n * FEE; // the permanent cap of the fee
 const STEPS = 5;
 // Mode C (Groth16) is development only: it is tested when the fixture was
 // built with `--features dev-groth16` and ZENO_DEV_GROTH16=1 is set.
@@ -30,6 +31,7 @@ function compile() {
     sources: {
       "ZenoLlullVerifier.sol": read("ZenoLlullVerifier.sol"),
       "lib/ZenoBn254.sol": read("lib/ZenoBn254.sol"),
+      "lib/ZenoFees.sol": read("lib/ZenoFees.sol"),
       "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
       "dev/ZenoLlullVerifierDevGroth16.sol": read("dev/ZenoLlullVerifierDevGroth16.sol"),
     },
@@ -94,23 +96,41 @@ const intrinsicGas = (data) =>
   // An address without code is refused.
   const noDecider = await evm.runCall({
     caller: owner,
-    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(0xdeadn)),
+    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(MAX_FEE) + word(0xdeadn)),
     gasLimit: 10_000_000n,
   });
   assert.notEqual(noDecider.execResult.exceptionError, undefined, "a decider without code was accepted");
 
   const deploy = await evm.runCall({
     caller: owner,
-    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(BigInt(deciderAddress.toString()))),
+    data: hexToBytes("0x" + contract.evm.bytecode.object + word(FEE) + word(MAX_FEE) + word(BigInt(deciderAddress.toString()))),
     gasLimit: 10_000_000n,
   });
   assert.equal(deploy.execResult.exceptionError, undefined, "deployment failed");
+  // A fee above its cap is refused at deployment.
+  const overCap = await evm.runCall({
+    caller: owner,
+    data: hexToBytes("0x" + contract.evm.bytecode.object + word(MAX_FEE + 1n) + word(MAX_FEE) + word(BigInt(deciderAddress.toString()))),
+    gasLimit: 10_000_000n,
+  });
+  assert.notEqual(overCap.execResult.exceptionError, undefined, "a fee above the cap was accepted");
   const to = deploy.createdAddress;
   console.log(`deployment           : ${deploy.execResult.executionGasUsed} gas`);
 
-  const call = async (caller, dataHex, value = 0n) => {
+  // Finalizations pay one fee: attached automatically unless a value is
+  // given, and counted when they succeed.
+  const finalizers = new Set(
+    Object.entries(sel)
+      .filter(([sig]) => /^(finalize|finalizeUniversal|finalizeWithProof)\(/.test(sig))
+      .map(([, id]) => id)
+  );
+  let paidFinalizations = 0;
+  const call = async (caller, dataHex, value) => {
     const data = hexToBytes(dataHex);
+    const finalizing = finalizers.has(dataHex.slice(2, 10));
+    value ??= finalizing ? FEE : 0n;
     const res = await evm.runCall({ caller, to, data, value, gasLimit: 5_000_000n });
+    if (finalizing && res.execResult.exceptionError === undefined) paidFinalizations += 1;
     return {
       ok: res.execResult.exceptionError === undefined,
       ret: bytesToHex(res.execResult.returnValue),
@@ -188,6 +208,9 @@ const intrinsicGas = (data) =>
 
   // --- Finalize ---------------------------------------------------------------
   await revertsWith(call(stranger, fx.finalize.calldata), "NotSessionProver()");
+  // A finalization pays exactly one fee.
+  await revertsWith(call(prover, fx.finalize.calldata, 0n), "WrongFee()");
+  await revertsWith(call(prover, fx.finalize.calldata, FEE + 1n), "WrongFee()");
   const fin = await call(prover, fx.finalize.calldata);
   assert.ok(fin.ok, "finalize reverted");
   console.log(`finalize             : ${fin.gas} gas`);
@@ -324,6 +347,7 @@ const intrinsicGas = (data) =>
     }
   }
 
+  await revertsWith(call(prover, fin2.calldata, 0n), "WrongFee()");
   const decidedU = await call(prover, fin2.calldata);
   assert.ok(decidedU.ok, "finalizeUniversal reverted");
   console.log(`finalizeUniversal    : ${decidedU.gas} gas (no circuit-specific setup)`);
@@ -447,14 +471,22 @@ const intrinsicGas = (data) =>
 
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  assert.equal(await balance(to), FEE * BigInt(2 * STEPS + devSteps + extraSteps));
+  const paid = FEE * BigInt(2 * STEPS + devSteps + extraSteps + paidFinalizations);
+  assert.equal(await balance(to), paid);
+  // The owner sets the fee, never above its cap; nobody else can.
+  const setFee = (fee) => "0x" + sel["setProtocolFee(uint256)"] + word(fee);
+  await revertsWith(call(owner, setFee(MAX_FEE + 1n)), "FeeAboveCap()");
+  assert.ok((await call(owner, setFee(MAX_FEE))).ok);
+  assert.equal(BigInt((await call(stranger, "0x" + sel["maxFee()"])).ret), MAX_FEE);
+  assert.ok((await call(owner, setFee(FEE))).ok);
   const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(owner.toString()));
   await revertsWith(call(stranger, withdraw), "NotOwner()");
   await revertsWith(call(stranger, "0x" + sel["setProtocolFee(uint256)"] + word(0n)), "NotOwner()");
   const before = await balance(owner);
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
-  assert.equal((await balance(owner)) - before, FEE * BigInt(2 * STEPS + devSteps + extraSteps));
+  assert.equal((await balance(owner)) - before, paid);
+  console.log(`protocol fee         : ${paidFinalizations} finalizations and ${2 * STEPS + devSteps + extraSteps} steps paid, cap ${MAX_FEE} wei enforced`);
   console.log("OK");
 })().catch((e) => {
   console.error(e);

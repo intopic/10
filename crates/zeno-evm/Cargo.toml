@@ -1,0 +1,14 @@
+[package]
+name = "zeno-evm"
+description = "zeno-evm: Circom step circuits (.r1cs/.wtns) to calldata for the on-chain verifiers (modes B and D)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+evm-verifier = { path = "../evm-verifier" }
+sdk-bindings = { path = "../sdk-bindings", features = ["parallel"] }
+zeno-ivc = { path = "../zeno-ivc" }
+ark-bn254.workspace = true
+rand.workspace = true
+sha2 = { workspace = true, features = ["std"] }

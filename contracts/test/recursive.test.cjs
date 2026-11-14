@@ -20,6 +20,8 @@ const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/rele
 const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
 const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
 const STEPS = 3;
+const FEE = 2_000_000_000_000n; // per finalizeRecursive
+const MAX_FEE = 10n * FEE;
 
 function compile() {
   const read = (name) => ({ content: fs.readFileSync(path.join(__dirname, "..", name), "utf8") });
@@ -28,6 +30,7 @@ function compile() {
     sources: {
       "ZenoBatchedDecider.sol": read("ZenoBatchedDecider.sol"),
       "lib/ZenoBn254.sol": read("lib/ZenoBn254.sol"),
+      "lib/ZenoFees.sol": read("lib/ZenoFees.sol"),
       "ZenoRecursiveVerifier.sol": read("ZenoRecursiveVerifier.sol"),
       "ZenoCycleFoldShape.sol": read("ZenoCycleFoldShape.sol"),
     },
@@ -76,15 +79,19 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
 
   // The CycleFold matrices are compiled into the verifier (ZenoCycleFoldShape).
   const decider = await create("0x" + compiled.decider.evm.bytecode.object, "batched decider");
-  const verifierInit = "0x" + compiled.recursive.evm.bytecode.object + word(BigInt(decider.address.toString()));
+  const verifierInit =
+    "0x" + compiled.recursive.evm.bytecode.object + word(BigInt(decider.address.toString())) + word(FEE) + word(MAX_FEE);
   const verifier = await create(verifierInit, "recursive verifier");
   const runtime = compiled.recursive.evm.deployedBytecode.object.length / 2;
   assert.ok(runtime <= 24576, "the verifier exceeds the contract size limit");
   console.log(`deployment           : ${verifier.gas} gas (verifier, ${runtime} bytes), ${decider.gas} gas (batched decider)`);
 
-  const call = async (dataHex) => {
+  // finalizeRecursive pays one fee: attached unless another value is given.
+  const finalizeSel = sel["finalizeRecursive(uint256[],uint256[],uint256[],uint256[],uint256[])"];
+  const call = async (dataHex, value, caller = prover) => {
     const bytes = hexToBytes(dataHex);
-    const res = await evm.runCall({ caller: prover, to: verifier.address, data: bytes, gasLimit: 30_000_000n });
+    value ??= dataHex.slice(2, 10) === finalizeSel ? FEE : 0n;
+    const res = await evm.runCall({ caller, to: verifier.address, data: bytes, value, gasLimit: 30_000_000n });
     return {
       ok: res.execResult.exceptionError === undefined,
       gas: res.execResult.executionGasUsed + intrinsicGas(bytes),
@@ -118,6 +125,11 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // ---- The honest decision --------------------------------------------------
   const shape = await call("0x" + sel["cfShapeHash()"]);
   assert.equal(shape.ret, fx.cfHash, "the compiled CycleFold records are those of the prover");
+  // The fee is exactly protocolFee.
+  for (const v of [0n, FEE - 1n, FEE + 1n]) {
+    const r = await call(fx.calldata, v);
+    assert.equal(r.ok, false, `finalizeRecursive accepted ${v} wei`);
+  }
   const res = await call(fx.calldata);
   assert.ok(res.ok, "finalizeRecursive reverted");
   assert.equal(res.ret, fx.systemId, "system id");
@@ -127,11 +139,14 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   console.log(`finalizeRecursive    : ${res.gas} gas (${res.exec} execution, ${calldataBytes} bytes of calldata), ${fx.steps} IVC steps`);
   console.log(`proof                : ${fx.proofBytes} bytes (CycleFold argument + one batched decider proof); primary circuit ${fx.primaryConstraints} constraints, closing circuit ${fx.closingConstraints}`);
 
-  // ---- A decided claim is not decided again ------------------------------------
+  // ---- A decided claim is not decided (nor paid for) again --------------------
+  const { keccak256 } = require("ethereum-cryptography/keccak.js");
+  const selectorOf = (sig) => bytesToHex(keccak256(Buffer.from(sig))).slice(0, 10);
   const again = await call(fx.calldata);
-  assert.ok(again.ok && again.ret === fx.systemId, "a second submission of a decided claim");
+  assert.equal(again.ok, false, "a second submission of a decided claim was accepted");
+  assert.equal(again.ret.slice(0, 10), selectorOf("AlreadyDecided()"));
   assert.ok(again.exec < 100_000, `the second submission executed ${again.exec} gas`);
-  console.log(`replay               : ${again.gas} gas (${again.exec} execution): the decided claim returns at once`);
+  console.log(`replay               : reverted AlreadyDecided after ${again.exec} gas of execution; the fee is returned`);
 
   // ---- Circom -> EVM (mode D): a real Circom circuit, end to end ----------------
   // Witnesses from Circom's witness generator, the CycleFold IVC and the
@@ -186,6 +201,26 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     const { keccak256 } = require("ethereum-cryptography/keccak.js");
     assert.equal(r.ret.slice(0, 10), bytesToHex(keccak256(Buffer.from("MalformedInput()"))).slice(0, 10));
     console.log("non-canonical claim  : rejected as malformed");
+  }
+  // ---- Protocol fee: paid by every decision, capped, withdrawn by the owner ----
+  {
+    const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
+    const decisions = process.env.ZENO_PTAU ? 2n : 1n;
+    assert.equal(await balance(verifier.address), FEE * decisions);
+    const stranger = Address.fromString("0x00000000000000000000000000000000000000c3");
+    await evm.stateManager.putAccount(stranger, new Account(0n, 10n ** 18n));
+    const setFee = (fee) => "0x" + sel["setProtocolFee(uint256)"] + word(fee);
+    assert.equal((await call(setFee(FEE), 0n, stranger)).ok, false, "a stranger set the fee");
+    const over = await call(setFee(MAX_FEE + 1n), 0n, deployer);
+    assert.equal(over.ret.slice(0, 10), selectorOf("FeeAboveCap()"));
+    assert.ok((await call(setFee(MAX_FEE), 0n, deployer)).ok);
+    const withdraw = "0x" + sel["withdrawFees(address)"] + word(BigInt(deployer.toString()));
+    assert.equal((await call(withdraw, 0n, stranger)).ok, false, "a stranger withdrew the fees");
+    const before = await balance(deployer);
+    assert.ok((await call(withdraw, 0n, deployer)).ok);
+    assert.equal(await balance(verifier.address), 0n);
+    assert.equal((await balance(deployer)) - before, FEE * decisions);
+    console.log(`protocol fee         : ${FEE * decisions} wei for ${decisions} decisions, cap ${MAX_FEE} wei enforced`);
   }
   console.log("OK");
 })().catch((e) => {

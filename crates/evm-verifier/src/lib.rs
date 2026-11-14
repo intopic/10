@@ -60,6 +60,14 @@ pub const TAG_POINT: u64 = 5;
 /// Transcript tag of the KZG batching challenge; must match the contract.
 pub const TAG_BATCH: u64 = 6;
 
+/// Label of the commitment keys of Circom circuits in mode B; part of every
+/// circuit's `vk`. The SDK, the Cloud Prover and `zeno-evm` all use it, so a
+/// circuit has the same `vk` whoever proves it.
+pub const CIRCOM_UNIVERSAL_LABEL: &[u8] = b"zeno-llull/evm/universal/v1";
+/// Label of the parameters of Circom circuits in mode D; part of the system
+/// id.
+pub const CIRCOM_RECURSIVE_LABEL: &[u8] = b"zeno-llull/evm/recursive/v1";
+
 /// A 32-byte big-endian EVM word.
 pub type Word = [u8; 32];
 

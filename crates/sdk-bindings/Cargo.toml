@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 core-r1cs = { path = "../core-r1cs", default-features = false }
 zeno-ivc = { path = "../zeno-ivc", default-features = false }
 decider-zk = { path = "../decider-zk", default-features = false }
+evm-verifier = { path = "../evm-verifier", default-features = false }
 zeno-license = { path = "../zeno-license", default-features = false }
 ark-ff.workspace = true
 ark-serialize.workspace = true
@@ -31,8 +32,8 @@ zeno-license = { path = "../zeno-license" }
 [features]
 default = ["batch-affine-msm"]
 # The prover's commitments with batched affine additions (llull-folder::msm).
-batch-affine-msm = ["zeno-ivc/batch-affine-msm"]
-parallel = ["zeno-ivc/parallel", "decider-zk/parallel"]
+batch-affine-msm = ["zeno-ivc/batch-affine-msm", "evm-verifier/batch-affine-msm"]
+parallel = ["zeno-ivc/parallel", "decider-zk/parallel", "evm-verifier/parallel"]
 # Multi-threaded WebAssembly (browser Web Workers + SharedArrayBuffer).
 # Needs nightly Rust with `-Z build-std` and `+atomics,+bulk-memory`.
 wasm-threads = ["parallel", "dep:wasm-bindgen-rayon"]

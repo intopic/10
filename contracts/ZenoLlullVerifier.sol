@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {ZenoBn254} from "./lib/ZenoBn254.sol";
+import {ZenoFees} from "./lib/ZenoFees.sol";
 
 /// @title ZenoLlullVerifier — on-chain folding verifier (BN254)
 /// @notice Each call to `verifyFoldedProof` folds one step instance into a
@@ -41,7 +42,7 @@ interface IZenoUniversalDecider {
     ) external view returns (bool);
 }
 
-contract ZenoLlullVerifier {
+contract ZenoLlullVerifier is ZenoFees {
     /// Order of the BN254 scalar field.
     uint256 internal constant R =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
@@ -70,9 +71,7 @@ contract ZenoLlullVerifier {
         uint256[] state;
     }
 
-    address public owner;
-    /// Fee in wei charged for every folded step.
-    uint256 public protocolFee;
+    // Fee: `protocolFee` for every folded step and for every finalization.
     uint256 public sessionCount;
     mapping(bytes32 => Session) internal sessions;
     /// The universal decider verifier contract, fixed at deployment: nobody
@@ -84,32 +83,18 @@ contract ZenoLlullVerifier {
     event SessionFinalized(bytes32 indexed sessionId, uint64 steps, bytes32 accumulatorHash);
     event SessionDecided(bytes32 indexed sessionId, uint64 steps);
     event CircuitAnnounced(bytes32 indexed circuitId, address indexed by, uint256[] key);
-    event ProtocolFeeChanged(uint256 fee);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
-    error NotOwner();
     error NotSessionProver();
     error SessionClosed();
-    error WrongFee();
     error MalformedProof();
     error ScalarOutOfRange();
     error StateMismatch();
-    error TransferFailed();
     error UnknownDeciderKey();
     error InvalidDeciderProof();
 
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
-    constructor(uint256 fee, IZenoUniversalDecider decider) {
+    /// @param fee initial `protocolFee`; @param maxFee_ its permanent cap.
+    constructor(uint256 fee, uint256 maxFee_, IZenoUniversalDecider decider) ZenoFees(fee, maxFee_) {
         if (address(decider).code.length == 0) revert UnknownDeciderKey();
         universalDecider = decider;
-        owner = msg.sender;
-        protocolFee = fee;
-        emit OwnershipTransferred(address(0), msg.sender);
-        emit ProtocolFeeChanged(fee);
     }
 
     // ------------------------------------------------------------------
@@ -142,7 +127,7 @@ contract ZenoLlullVerifier {
         payable
         returns (bytes32 sessionId)
     {
-        if (msg.value != protocolFee) revert WrongFee();
+        _chargeFee(1);
         if (proof.length != 160) revert MalformedProof();
         sessionId = bytes32(proof[0:32]);
         Session storage s = sessions[sessionId];
@@ -191,7 +176,7 @@ contract ZenoLlullVerifier {
         uint256 stride = 4 + 2 * k;
         uint256 count = steps.length / stride;
         if (count == 0 || steps.length != count * stride) revert MalformedProof();
-        if (msg.value != protocolFee * count) revert WrongFee();
+        _chargeFee(count);
 
         // Accumulator and state in memory: [ex, ey, u, wx, wy], x, state.
         uint256[5] memory a = [s.ex, s.ey, s.u, s.wx, s.wy];
@@ -230,7 +215,7 @@ contract ZenoLlullVerifier {
     /// the accumulator (zero-knowledge masking). The decider proof is then
     /// checked off-chain against the resulting accumulator.
     /// @param maskProof `comm_E ‖ u ‖ comm_W ‖ x ‖ comm_T` of the mask.
-    function finalize(bytes32 sessionId, bytes calldata maskProof) external {
+    function finalize(bytes32 sessionId, bytes calldata maskProof) external payable {
         Session storage s = _foldMask(sessionId, maskProof);
         emit SessionFinalized(sessionId, s.steps, accumulatorHash(sessionId));
     }
@@ -246,7 +231,7 @@ contract ZenoLlullVerifier {
         bytes calldata maskProof,
         uint256[] calldata key,
         uint256[] calldata proof
-    ) external {
+    ) external payable {
         Session storage s = _foldMask(sessionId, maskProof);
         // The session's `vk` is the hash of the circuit key it was opened
         // for: only that key can decide it. No registry, no administrator.
@@ -272,10 +257,12 @@ contract ZenoLlullVerifier {
         emit CircuitAnnounced(circuitId, msg.sender, key);
     }
 
+    /// Charges the finalization fee, then folds the mask (zero-knowledge).
     function _foldMask(bytes32 sessionId, bytes calldata maskProof)
         internal
         returns (Session storage s)
     {
+        _chargeFee(1);
         s = sessions[sessionId];
         if (s.prover != msg.sender) revert NotSessionProver();
         if (s.finalized) revert SessionClosed();
@@ -334,29 +321,5 @@ contract ZenoLlullVerifier {
         Session storage s = sessions[sessionId];
         return keccak256(abi.encodePacked(s.vk, s.ex, s.ey, s.u, s.wx, s.wy, s.x, s.state, s.steps));
     }
-
-    // ------------------------------------------------------------------
-    // Protocol fee
-    // ------------------------------------------------------------------
-
-    function setProtocolFee(uint256 fee) external onlyOwner {
-        protocolFee = fee;
-        emit ProtocolFeeChanged(fee);
-    }
-
-    function withdrawFees(address payable to) external onlyOwner {
-        (bool ok, ) = to.call{value: address(this).balance}("");
-        if (!ok) revert TransferFailed();
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert NotOwner();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
-    }
-
-    // ------------------------------------------------------------------
-    // BN254 arithmetic through the EIP-196 precompiles
-    // ------------------------------------------------------------------
 
 }

@@ -98,4 +98,20 @@ if len(sys.argv) > 2:
     expect_error(zenollull.ZenoError.License, lambda: limited.prove_step(witnesses[2]))
     assert limited.steps() == 2
     print("quota    : third step refused under a 2-step license")
+# Mode B on the device: the calldata a wallet sends to ZenoLlullVerifier.sol
+# (executed in the EVM tests; here the same calls through the bindings).
+ptau = (ROOT / "crates/evm-verifier/fixtures/pot7_test.ptau").read_bytes()
+onchain = zenollull.OnChainProver(LICENSE, r1cs, ptau, ["3"])
+assert onchain.vk().startswith("0x") and len(onchain.vk()) == 66
+assert len(onchain.open_session_calldata()) == 4 + 32 * 4
+session = "0x" + "11" * 32
+for wtns in witnesses:
+    onchain.prove_step(wtns)
+assert onchain.pending_steps() == 3
+batch = onchain.take_calldata(session)
+assert batch[4:36] == bytes.fromhex("11" * 32)
+final = onchain.finalize(session)
+assert onchain.steps() == 3 and onchain.state() == ["130308420719099"]
+expect_error(zenollull.ZenoError.InvalidInput, lambda: onchain.take_calldata("0x12"))
+print(f"mode B   : 3 steps, batch {len(batch)} bytes, finalizeUniversal {len(final)} bytes of calldata")
 print("OK")
