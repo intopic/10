@@ -196,6 +196,12 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   nisjen. Kuota `max_steps` e licencës zbatohet për sesion (403). Prova e
   dhënë mbahet `ZENO_PROOF_RETENTION_SECS` (10 min): përsëritja e
   `finalize-snark` e kthen pa faturim të dytë (`x-zeno-repeated: true`).
+  **Të dhënat e klientit nuk ruhen:** qarqet, dëshmitë dhe gjendjet jetojnë
+  vetëm në memorie gjatë sesionit; kur sesioni mbaron (finalizim, gabim ose
+  pasivitet) provuesi lëshohet dhe çdo dëshmi mbishkruhet me zero, dhe vlerat
+  e telave të një hapi fshihen sapo hapi paloset. Mbetet vetëm përgjigjja (provë
+  ZK ose calldata publike) për `ZENO_PROOF_RETENTION_SECS`; me `0` nuk mbetet
+  asgjë. Regjistri mban vetëm klientin, kohën dhe ngjarjen.
   Sesionet e të njëjtit `.r1cs` ndajnë parametrat; një detyrë në sfond pastron
   çdo minutë sesionet joaktive, provat e skaduara dhe qarqet e papërdorura.
   `GET /metrics` (Prometheus, pa licencë, pa të dhëna klientësh) jep sesionet,

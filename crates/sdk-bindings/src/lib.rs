@@ -63,6 +63,14 @@ impl CircomParams {
     }
 }
 
+/// Overwrites a step's wire values (the witness of one step) with zeros.
+pub(crate) fn wipe_step(mut step: R1csStep<Fr>) {
+    use zeroize::Zeroize;
+    if let Some(wires) = step.assignment.as_mut() {
+        wires.zeroize();
+    }
+}
+
 /// An IVC prover for a Circom step circuit. The parameters are shared
 /// (`Arc`): provers of the same circuit can use one copy.
 pub struct CircomIvc {
@@ -134,8 +142,16 @@ impl CircomIvc {
         if let Some(row) = step.first_unsatisfied(w) {
             return Err(SdkError::UnsatisfiedWitness { constraint: row });
         }
-        self.acc.prove_step(&self.params.ivc, &step, rng)?;
+        let result = self.acc.prove_step(&self.params.ivc, &step, rng);
+        wipe_step(step);
+        result?;
         Ok(())
+    }
+
+    /// Overwrites the prover's secret state (the folded witnesses) with
+    /// zeros; the prover cannot be used afterwards.
+    pub fn wipe(&mut self) {
+        self.acc.wipe();
     }
 
     /// Verifies the current prover state.

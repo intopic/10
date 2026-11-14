@@ -366,6 +366,17 @@ where
         Ok(())
     }
 
+    /// Overwrites every witness of the state with zeros: call it (or let a
+    /// service's session drop call it) once the state is no longer needed.
+    pub fn wipe(&mut self) {
+        use zeroize::Zeroize;
+        self.acc1.1.wipe();
+        self.acc2.1.wipe();
+        self.last2.1.wipe();
+        self.z0.zeroize();
+        self.zi.zeroize();
+    }
+
     /// Verifies that `z_i = F^i(z_0)`, in time independent of `i`.
     pub fn verify(&self, params: &IvcParams<P1, P2>) -> Result<(), IvcError> {
         if self.i == 0 {

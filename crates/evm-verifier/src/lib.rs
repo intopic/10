@@ -308,6 +308,11 @@ impl OnChainFolder {
         }
     }
 
+    /// Overwrites the accumulated witness with zeros.
+    pub fn wipe(&mut self) {
+        self.witness.wipe();
+    }
+
     /// Folds one satisfied step `(w, x)` and returns what the contract needs
     /// to perform the same fold.
     pub fn fold_step(

@@ -10,6 +10,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use core::fmt;
+use zeroize::Zeroize;
 
 /// Errors raised when checking an R1CS relation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,5 +190,24 @@ impl<C: CurveGroup> RelaxedR1CSWitness<C> {
             w: alloc::vec![C::ScalarField::zero(); shape.num_vars],
             r_w: C::ScalarField::zero(),
         }
+    }
+}
+
+impl<C: CurveGroup> R1CSWitness<C> {
+    /// Overwrites the witness with zeros (secrets must not linger in freed
+    /// memory once a session ends).
+    pub fn wipe(&mut self) {
+        self.w.zeroize();
+        self.r_w.zeroize();
+    }
+}
+
+impl<C: CurveGroup> RelaxedR1CSWitness<C> {
+    /// Overwrites the witness with zeros, see [`R1CSWitness::wipe`].
+    pub fn wipe(&mut self) {
+        self.e.zeroize();
+        self.r_e.zeroize();
+        self.w.zeroize();
+        self.r_w.zeroize();
     }
 }

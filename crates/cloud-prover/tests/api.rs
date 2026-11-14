@@ -825,3 +825,41 @@ async fn mode_d_through_the_api() {
     let usage = state.meter.lock().unwrap().usage("acme");
     assert_eq!((usage.proofs, usage.recursive_proofs), (0, 1));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_no_retention_nothing_is_kept_after_the_answer() {
+    let (private, public) = generate_keypair();
+    let limits = Limits {
+        proof_retention: std::time::Duration::ZERO,
+        ..Limits::default()
+    };
+    let state = AppState::new(public, limits, Meter::in_memory());
+    let app = app(state.clone());
+    let token = license(&private, "acme", 4_000_000_000);
+    let (_, body) = call(&app, "POST", "/v1/sessions?z0=3", Some(&token), R1CS).await;
+    let session = json(&body)["session_id"].as_str().unwrap().to_string();
+    let step = format!("/v1/fold-step?session={session}");
+    assert_eq!(
+        call(&app, "POST", &step, Some(&token), WTNS[0]).await.0,
+        StatusCode::OK
+    );
+    let fin = format!("/v1/finalize-snark?session={session}");
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&token), b"").await.0,
+        StatusCode::OK
+    );
+    // The session is gone and its answer is not kept.
+    assert_eq!(
+        call(&app, "POST", &fin, Some(&token), b"").await.0,
+        StatusCode::NOT_FOUND
+    );
+    state.sweep();
+    assert_eq!(
+        (
+            state.session_count(),
+            state.retained_proofs(),
+            state.circuit_count()
+        ),
+        (0, 0, 0)
+    );
+}

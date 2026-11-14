@@ -106,8 +106,11 @@ impl RecursiveSession {
         if let Some(constraint) = step.first_unsatisfied(wires) {
             return Err(SdkError::UnsatisfiedWitness { constraint });
         }
-        self.ivc
-            .prove_step(&self.circuit.params.ivc, &step, &mut rand::rngs::OsRng)?;
+        let result = self
+            .ivc
+            .prove_step(&self.circuit.params.ivc, &step, &mut rand::rngs::OsRng);
+        wipe_wires(step);
+        result?;
         Ok(())
     }
 
@@ -206,6 +209,26 @@ impl Prover {
             "finalizeUniversal": finalize,
             "fee_units": pending + 1,
         }))
+    }
+}
+
+/// A session's secrets are wiped when it ends, however it ends (finalized,
+/// closed after an error, or swept when idle): the last reference to the
+/// prover drops it, and dropping it overwrites every witness with zeros.
+impl Drop for Prover {
+    fn drop(&mut self) {
+        match self {
+            Self::Transparent(ivc) => ivc.wipe(),
+            Self::Universal(p) => p.wipe(),
+            Self::Recursive(s) => s.ivc.wipe(),
+        }
+    }
+}
+
+fn wipe_wires(mut step: zeno_ivc::R1csStep<Fr>) {
+    use zeroize::Zeroize;
+    if let Some(wires) = step.assignment.as_mut() {
+        wires.zeroize();
     }
 }
 

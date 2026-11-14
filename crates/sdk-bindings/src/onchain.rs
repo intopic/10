@@ -193,6 +193,7 @@ impl OnChainProver {
             return Err(SdkError::UnsatisfiedWitness { constraint });
         }
         let (w, x) = r1cs.folding_assignment(wires)?;
+        crate::wipe_step(step);
         let next = x[k..].to_vec();
         let params = &self.circuit.params;
         let folder = self.folder.as_mut().expect("checked above");
@@ -258,6 +259,13 @@ impl OnChainProver {
     /// Steps folded so far.
     pub fn steps(&self) -> u64 {
         self.folded
+    }
+
+    /// Overwrites the accumulated witness with zeros.
+    pub fn wipe(&mut self) {
+        if let Some(folder) = self.folder.as_mut() {
+            folder.wipe();
+        }
     }
 
     /// Current state `z_i` as decimal strings.

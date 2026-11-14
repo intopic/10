@@ -12,6 +12,7 @@ ark-std.workspace = true
 ark-serialize.workspace = true
 ark-relations = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+zeroize.workspace = true
 
 [dev-dependencies]
 ark-pallas.workspace = true

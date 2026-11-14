@@ -106,6 +106,14 @@ fn circom_ivc_end_to_end_with_zk_proof() {
         >::from_bytes(&verifier.ivc, &bad)
         .is_err());
     }
+
+    // Wiping overwrites every secret of the state with zeros.
+    use ark_ff::Zero;
+    ivc.wipe();
+    let zero = |v: &[Fr]| v.iter().all(Fr::is_zero);
+    assert!(zero(&ivc.acc.acc1.1.w) && zero(&ivc.acc.acc1.1.e));
+    assert!(ivc.acc.last2.1.w.iter().all(|x| x.is_zero()));
+    assert!(ivc.acc.acc1.1.r_w.is_zero() && ivc.acc.acc2.1.r_e.is_zero());
 }
 
 #[test]

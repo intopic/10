@@ -380,6 +380,17 @@ where
 
     /// Verifies that `z_i = F^i(z_0)` with the full (non-succinct) checks,
     /// in time independent of `i`.
+    /// Overwrites every witness of the state with zeros.
+    pub fn wipe(&mut self) {
+        use zeroize::Zeroize;
+        self.acc.1.wipe();
+        self.last.1.wipe();
+        self.cf.1.e.zeroize();
+        self.cf.1.w.zeroize();
+        self.z0.zeroize();
+        self.zi.zeroize();
+    }
+
     pub fn verify(&self, params: &CycleFoldParams<G1, G2>) -> Result<(), IvcError> {
         if self.i == 0 {
             return Err(IvcError::NoSteps);

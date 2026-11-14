@@ -13,6 +13,7 @@ core-r1cs = { path = "../core-r1cs", default-features = false }
 zeno-ivc = { path = "../zeno-ivc", default-features = false }
 decider-zk = { path = "../decider-zk", default-features = false }
 evm-verifier = { path = "../evm-verifier", default-features = false }
+zeroize.workspace = true
 zeno-license = { path = "../zeno-license", default-features = false }
 ark-ff.workspace = true
 ark-serialize.workspace = true

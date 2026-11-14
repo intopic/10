@@ -33,6 +33,14 @@
 //!   and costs only the session it ran for;
 //! * request handlers never wait on a lock held by a running job: a second
 //!   request for a busy session gets `409`;
+//! * nothing a client sends is written to disk: circuits, witnesses and
+//!   prover states live in memory for the session only. When a session ends
+//!   (finalized, failed, or idle for [`Limits::session_idle_timeout`]) its
+//!   prover is dropped and every witness in it is overwritten with zeros; a
+//!   step's wire values are wiped as soon as the step is folded. What stays
+//!   for [`Limits::proof_retention`] is only the answer (a zero-knowledge
+//!   proof or public calldata), and `ZENO_PROOF_RETENTION_SECS=0` keeps
+//!   nothing at all. The usage log holds customer, time and event only;
 //! * a session slot is reserved before the session is built, so the limit
 //!   per license holds under concurrent requests;
 //! * every folded step, proof and session is recorded in the usage log
@@ -670,9 +678,11 @@ fn retained(
 ) -> Option<Response> {
     let id = query.get("session")?;
     let finished = lock(&state.finished);
+    let retention = state.limits.proof_retention;
     let f = finished
         .get(id)
-        .filter(|f| f.customer == claims.customer && f.json == json)?;
+        .filter(|f| f.customer == claims.customer && f.json == json)
+        .filter(|f| f.at.elapsed() < retention)?;
     Some(answer(f.status, f.steps, f.json, &f.body, true))
 }
 
