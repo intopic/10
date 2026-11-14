@@ -74,14 +74,10 @@ Swift/Kotlin/Python prodhojnë të njëjtat thirrje pa API, dhe dëshmitë nuk
 largohen nga pajisja; mjafton `.ptau`-ja e shkurtuar e qarkut (`zeno-evm
 trim-ptau`).
 
-**C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
-çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme. Nuk
-është pjesë e prodhimit: në Rust është pas feature-it `dev-groth16` (joaktiv
-si parazgjedhje), në zinxhir vetëm te kontrata
-`contracts/dev/ZenoLlullVerifierDevGroth16.sol`. `ZenoLlullVerifier.sol` nuk
-ka as `finalizeWithProof`, as regjistër çelësash.
-
-Emërtimi A / B / C / D është i njëjtë kudo: në kod, në teste dhe në dokumente.
+**C. (e hequr).** Vendimtari Groth16 i zhvillimit (`finalizeWithProof`,
+çelësa për qark me setup të besuar) u hoq më 14 nëntor 2026; ndodhet në
+historinë e git-it deri te `e05e7ce`. Shkronja C nuk përdoret më, që emrat A /
+B / D të mbeten të njëjtë kudo.
 
 **D. IVC rekursive me CycleFold + `finalizeRecursive`.** `zeno-ivc::cyclefold` +
 `evm-verifier::recursive` + `ZenoRecursiveVerifier.sol`. Provuesi palos N hapa
@@ -129,7 +125,6 @@ Të gjitha janë matur në 4 vCPU, përveç ku shënohet ndryshe.
 | `verifyFoldedProof` | rreth 74k gas (198k hapi i parë) |
 | `verifyFoldedProofBatch` | rreth 22.9k gas për hap (100 hapa = 2.29 M) |
 | `finalizeUniversal` | 0.82 M gas / 6.7 KB (16 kufizime) → 1.89 M gas / 21.6 KB (65 536 kufizime) |
-| `finalizeWithProof` (Groth16, zhvillim) | rreth 456k gas, 544 bajt |
 | Qarku CycleFold / qarku primar CycleFold për hap (C = 128) | 943 kufizime (936 variabla) / 66 791 kufizime, 468k elemente jo-zero |
 | Qarku mbyllës | 136 974 kufizime, 782k elemente jo-zero, 350 hyrje publike; 28 s provim, 1.94 GB memorie |
 | Provuesi i `finalizeRecursive` (pas hapave) | rreth 23 s (31 s para paralelizimit të vendimtarit); verifikim native 14 ms |
@@ -147,7 +142,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 | Memorie ≤ 512 MB | arritur (Rust dhe WASM) |
 | Koha < 50 ms për hap në 2^16 | **e pa arritur** në 4 vCPU; pronari e ka pranuar vlerën aktuale |
 | "4 000 kufizime për hap" | **e pa arritur** (11 217); pronari e ka pranuar |
-| Provë < 4 KB | vetëm në mënyrën Groth16 të zhvillimit; mënyrat e tjera 6.7–21.6 KB |
+| Provë < 4 KB | e pa arritur në prodhim (3.9–21.6 KB për mënyrën B, 35 KB për D); 544 bajt u arrit vetëm me Groth16 me setup për qark, i hequr |
 | EVM < 300k gas | arritur për hapin e palosjes; vendimi final kushton 0.82–1.89 M (mënyra B) dhe 3.64 M (mënyra D, për çdo N) |
 
 ## 7. Çfarë duhet ditur para se të prekësh kodin
@@ -155,7 +150,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 - **Nuk ka pasur auditim sigurie.** Kodi kriptografik është shkruar dhe testuar
   nga i njëjti autor. Testet mbulojnë plotësinë dhe falsifikimin e çdo
   komponenti të provave, por nuk zëvendësojnë një auditim.
-- **Një e çarë u gjet dhe u mbyll** (`82ffe9d`): vendimtari Groth16 krahasonte
+- **Një e çarë u gjet dhe u mbyll** (`82ffe9d`, në vendimtarin Groth16 që sot është hequr): ai krahasonte
   dëshminë me angazhimet në një pikë që provuesi e dinte paraprakisht. Tani
   dëshmia lidhet me një hash Poseidon para se të nxirret pika. Mësimi vlen për
   çdo ndryshim: çdo gjë që futet si dëshmi në një SNARK duhet fiksuar para
@@ -254,8 +249,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
    optimizimet e vendosura (3.64 M gas, `.ptau 2^20`). Mbetet vendimi nëse ia
    vlen investimi në uljen e mëtejshme të gazit të vendimtarit universal
    (pika 8.2).
-2. **Mënyra Groth16 (C)**: e vendosur. Është jashtë prodhimit, pas
-   `dev-groth16` dhe në kontratë më vete për zhvillim.
+2. **Mënyra Groth16 (C)**: e hequr nga kodi (14 nëntor 2026).
 3. **Auditimi**: kur dhe nga kush, para çdo vendosjeje me vlerë reale.
 4. **Publikimi dhe çelësat**: tokeni i organizatës `@zenollull` në NPM dhe
    çelësi privat i licencave të shitësit nuk ekzistojnë ende; mjeti
@@ -337,12 +331,6 @@ export ZENO_TEST_LICENSE="$(cargo run -q --release -p zeno-license -- issue --de
 
 ```bash
 ./scripts/build-wasm-sdk.sh && node sdk/wasm/test/ivc.test.cjs
-```
-
-Mënyra C (Groth16, vetëm zhvillim):
-
-```bash
-cargo build --release -p evm-verifier --features dev-groth16 && ZENO_DEV_GROTH16=1 node contracts/test/verifier.test.cjs
 ```
 
 ```bash

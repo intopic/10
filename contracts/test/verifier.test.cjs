@@ -21,9 +21,6 @@ const FEE = 1_000_000_000_000n; // stepFee: 1e-6 ether per folded step
 const DECISION_FEE = 5n * FEE; // decisionFee: per finalization
 const MAX_FEE = 10n * FEE; // the permanent cap of both fees
 const STEPS = 5;
-// Mode C (Groth16) is development only: it is tested when the fixture was
-// built with `--features dev-groth16` and ZENO_DEV_GROTH16=1 is set.
-const DEV_GROTH16 = process.env.ZENO_DEV_GROTH16 === "1";
 
 function compile() {
   const read = (name) => ({ content: fs.readFileSync(path.join(__dirname, "..", name), "utf8") });
@@ -34,7 +31,6 @@ function compile() {
       "lib/ZenoBn254.sol": read("lib/ZenoBn254.sol"),
       "lib/ZenoFees.sol": read("lib/ZenoFees.sol"),
       "ZenoUniversalDecider.sol": read("ZenoUniversalDecider.sol"),
-      "dev/ZenoLlullVerifierDevGroth16.sol": read("dev/ZenoLlullVerifierDevGroth16.sol"),
     },
     settings: {
       optimizer: { enabled: true, runs: 200 },
@@ -49,9 +45,7 @@ function compile() {
   const warnings = (out.errors ?? []).filter((e) => e.severity === "warning");
   assert.equal(warnings.length, 0, warnings.map((e) => e.formattedMessage).join("\n"));
   return {
-    verifier: DEV_GROTH16
-      ? out.contracts["dev/ZenoLlullVerifierDevGroth16.sol"].ZenoLlullVerifierDevGroth16
-      : out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
+    verifier: out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
     production: out.contracts["ZenoLlullVerifier.sol"].ZenoLlullVerifier,
     decider: out.contracts["ZenoUniversalDecider.sol"].ZenoUniversalDecider,
   };
@@ -78,7 +72,7 @@ const intrinsicGas = (data) =>
     await evm.stateManager.putAccount(a, new Account(0n, 10n ** 18n));
   }
 
-  // The production contract has no Groth16 decider and no way to replace
+  // The contract has no Groth16 decider (removed) and no way to replace
   // the universal decider.
   for (const name of ["finalizeWithProof", "registerDevDeciderKey", "setUniversalDecider", "deciderKeyHash"]) {
     const found = Object.keys(compiled.production.evm.methodIdentifiers).filter((m) => m.startsWith(name + "("));
@@ -122,7 +116,7 @@ const intrinsicGas = (data) =>
   // given, and counted when they succeed.
   const finalizers = new Set(
     Object.entries(sel)
-      .filter(([sig]) => /^(finalize|finalizeUniversal|finalizeWithProof)\(/.test(sig))
+      .filter(([sig]) => /^(finalize|finalizeUniversal)\(/.test(sig))
       .map(([, id]) => id)
   );
   let paidFinalizations = 0;
@@ -235,49 +229,6 @@ const intrinsicGas = (data) =>
     const b = (parseInt(hex.slice(i, i + 2), 16) ^ 1).toString(16).padStart(2, "0");
     return hex.slice(0, i) + b + hex.slice(i + 2);
   };
-
-  // --- Mode C: Groth16 decider, development only -----------------------------
-  let devSteps = 0;
-  if (DEV_GROTH16) {
-  devSteps = STEPS;
-  const preB = fixture(["--steps", "1", "--mode", "onchain"]);
-  const openedB = await call(prover, preB.open);
-  assert.ok(openedB.ok);
-  const fb = fixture(["--session", openedB.ret, "--steps", String(STEPS), "--mode", "onchain"]);
-  for (const step of fb.steps) {
-    assert.ok((await call(prover, step.calldata, FEE)).ok);
-  }
-  const fwp = fb.finalizeWithProof.calldata;
-  // No decider key registered for this circuit yet.
-  await revertsWith(call(prover, fwp), "UnknownDeciderKey()");
-  await revertsWith(call(stranger, fb.register), "NotOwner()");
-  assert.ok((await call(owner, fb.register)).ok);
-  await revertsWith(call(owner, fb.register), "CircuitAlreadyRegistered()");
-
-  const proofStart = 4 + 64; // selector, sessionId, offset of maskProof
-  for (let w = 0; w < 17; w++) {
-    const res = await call(prover, flip(fwp, proofStart + 32 * w + 31));
-    assert.equal(res.ok, false, `forged proof word ${w} was accepted`);
-  }
-  const keyStart = (fwp.length - 2) / 2 - 32;
-  await revertsWith(call(prover, flip(fwp, keyStart + 31)), "UnknownDeciderKey()");
-  assert.equal((await readAccumulator(fb.getAccumulator)).finalized, false);
-
-  const decided = await call(prover, fwp);
-  assert.ok(decided.ok, "finalizeWithProof reverted");
-  console.log(`finalizeWithProof    : ${decided.gas} gas (mask fold + 2 KZG openings + Groth16)`);
-  console.log(`on-chain proof       : ${fb.finalizeWithProof.proofBytes} bytes`);
-  const finalB = await readAccumulator(fb.getAccumulator);
-  assert.deepEqual(finalB.acc, fb.finalizeWithProof.accumulator);
-  assert.equal(finalB.finalized, true);
-  assert.equal(finalB.decided, true);
-  assert.equal(finalB.steps, STEPS);
-  assert.deepEqual(finalB.state, [fb.steps[STEPS - 1].state]);
-  await revertsWith(call(prover, fwp), "SessionClosed()");
-  assert.ok(fb.finalizeWithProof.proofBytes < 4096);
-  } else {
-    console.log("finalizeWithProof    : skipped (mode C is development only; set ZENO_DEV_GROTH16=1)");
-  }
 
   let extraStepsEarly = 0;
   // --- Universal decider: no per-circuit keys ----------------------------------
@@ -473,7 +424,7 @@ const intrinsicGas = (data) =>
 
   // --- Protocol fee -----------------------------------------------------------
   const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-  const paid = FEE * BigInt(2 * STEPS + devSteps + extraSteps) + DECISION_FEE * BigInt(paidFinalizations);
+  const paid = FEE * BigInt(2 * STEPS + extraSteps) + DECISION_FEE * BigInt(paidFinalizations);
   assert.equal(await balance(to), paid);
   // The owner sets both fees, each never above the cap; nobody else can.
   const setFees = (step, decision) => "0x" + sel["setFees(uint256,uint256)"] + word(step) + word(decision);
@@ -491,7 +442,7 @@ const intrinsicGas = (data) =>
   assert.ok((await call(owner, withdraw)).ok);
   assert.equal(await balance(to), 0n);
   assert.equal((await balance(owner)) - before, paid);
-  console.log(`protocol fees        : ${2 * STEPS + devSteps + extraSteps} steps × stepFee + ${paidFinalizations} decisions × decisionFee, cap ${MAX_FEE} wei enforced`);
+  console.log(`protocol fees        : ${2 * STEPS + extraSteps} steps × stepFee + ${paidFinalizations} decisions × decisionFee, cap ${MAX_FEE} wei enforced`);
   console.log("OK");
 })().catch((e) => {
   console.error(e);

@@ -20,27 +20,17 @@ extern crate alloc;
 
 pub mod abi;
 pub mod cf_uniform;
-#[cfg(feature = "dev-groth16")]
-pub mod decider_circuit;
 pub mod kzg;
 pub mod recursive;
 pub mod universal;
 
 use alloc::vec::Vec;
-#[cfg(feature = "dev-groth16")]
-use ark_bn254::Bn254;
 use ark_bn254::{Fq, Fr, G1Projective as G1, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
-#[cfg(feature = "dev-groth16")]
-use ark_groth16::{Groth16, Proof, ProvingKey, VerifyingKey};
 use ark_serialize::CanonicalSerialize;
-#[cfg(feature = "dev-groth16")]
-use ark_snark::SNARK;
 use ark_std::rand::RngCore;
 use core_r1cs::{R1CSInstance, R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness};
-#[cfg(feature = "dev-groth16")]
-use decider_circuit::{witness_digest, DeciderCircuit};
 use decider_zk::spartan::{self, SpartanProof};
 use llull_folder::{
     commit_witness, nifs_prove_relaxed_with, nifs_prove_with, sample_relaxed, CommitmentKey,
@@ -53,12 +43,6 @@ use sha3::Keccak256;
 pub const TAG_FOLD: u64 = 1;
 /// Transcript tag of the final masking fold; must match the contract.
 pub const TAG_MASK: u64 = 3;
-#[cfg(feature = "dev-groth16")]
-/// Transcript tag of the decider's evaluation point; must match the contract.
-pub const TAG_POINT: u64 = 5;
-#[cfg(feature = "dev-groth16")]
-/// Transcript tag of the KZG batching challenge; must match the contract.
-pub const TAG_BATCH: u64 = 6;
 
 /// Label of the commitment keys of Circom circuits in mode B; part of every
 /// circuit's `vk`. The SDK and `zeno-evm` both use it, so a
@@ -105,37 +89,6 @@ fn keccak(words: &[Word]) -> Word {
 /// The low 128 bits of `keccak256(words)`, as the contract computes it.
 fn challenge(words: &[Word]) -> Fr {
     Fr::from_be_bytes_mod_order(&keccak(words)[16..])
-}
-
-#[cfg(feature = "dev-groth16")]
-/// `keccak256(words) mod r`, as the contract computes it.
-fn challenge_full(words: &[Word]) -> Fr {
-    Fr::from_be_bytes_mod_order(&keccak(words))
-}
-
-#[cfg(feature = "dev-groth16")]
-/// The point at which the decider opens `comm_W` and `comm_E`. It depends on
-/// the whole final accumulator and on the digest `d` of the vectors inside
-/// the decider circuit, so those vectors are fixed before the point is.
-pub fn decider_point(vk: &Word, acc: &RelaxedR1CSInstance<G1>, digest: &Fr) -> Fr {
-    let mut words = alloc::vec![word(&Fr::from(TAG_POINT)), *vk];
-    relaxed_words(&mut words, acc);
-    words.push(word(digest));
-    challenge_full(&words)
-}
-
-#[cfg(feature = "dev-groth16")]
-/// The challenge batching the two KZG openings into one pairing check.
-pub fn batch_challenge(c: &Fr, w_eval: &Fr, e_eval: &Fr, pi_w: &G1, pi_e: &G1) -> Fr {
-    let mut words = alloc::vec![
-        word(&Fr::from(TAG_BATCH)),
-        word(c),
-        word(w_eval),
-        word(e_eval)
-    ];
-    words.extend(point_words(pi_w));
-    words.extend(point_words(pi_e));
-    challenge_full(&words)
 }
 
 /// Fiat–Shamir challenge of a step fold.
@@ -189,17 +142,6 @@ impl EvmParams {
             .next_power_of_two();
         let ck = CommitmentKey::<G1>::setup(label, len);
         Self::from_key(shape, ck, None, label)
-    }
-
-    /// Derives the parameters over a universal KZG reference string, which
-    /// enables the on-chain decider ([`OnChainFolder::finalize_onchain`]).
-    pub fn setup_kzg(shape: R1CSShape<Fr>, label: &[u8], srs: &kzg::Srs) -> Self {
-        let len = shape
-            .num_vars
-            .max(shape.num_constraints)
-            .next_power_of_two();
-        let ck = srs.commitment_key(label, len);
-        Self::from_key(shape, ck, Some(srs.tau_g2), label)
     }
 
     /// Derives the parameters for the *universal* decider and commits to
@@ -411,61 +353,6 @@ impl OnChainFolder {
         }
         Ok((mask, acc, proof))
     }
-
-    #[cfg(feature = "dev-groth16")]
-    /// Mode C (Groth16, **development only**, feature `dev-groth16`): masks
-    /// the accumulator and produces the constant-size decider proof that
-    /// `finalizeWithProof` of `ZenoLlullVerifierDevGroth16` verifies: two
-    /// KZG openings and one Groth16 proof. Its keys are circuit-specific and
-    /// come from a setup with a trapdoor.
-    pub fn finalize_onchain(
-        self,
-        params: &EvmParams,
-        keys: &DeciderKeys,
-        rng: &mut (impl RngCore + ark_std::rand::CryptoRng),
-    ) -> Result<(MaskProof, RelaxedR1CSInstance<G1>, OnChainDeciderProof), DeciderError> {
-        if params.tau_g2.is_none() {
-            return Err(DeciderError::NotKzg);
-        }
-        let (mask, acc, witness) = self.mask(params, rng)?;
-        // Refuse to prove an accumulator that does not satisfy the circuit.
-        llull_folder::check_accumulator(&params.ck, &params.shape, &acc, &witness)
-            .map_err(|_| DeciderError::Unsatisfied)?;
-        let poseidon = llull_folder::transcript::poseidon_config::<Fr>();
-        let digest = witness_digest(&poseidon, &witness.w, &witness.e);
-        let c = decider_point(&params.vk, &acc, &digest);
-        let (w_eval, pi_w) = kzg::open(&params.ck, &witness.w, c);
-        let (e_eval, pi_e) = kzg::open(&params.ck, &witness.e, c);
-        let circuit = DeciderCircuit {
-            shape: &params.shape,
-            poseidon: &poseidon,
-            u: Some(acc.u),
-            x: Some(acc.x.clone()),
-            digest: Some(digest),
-            c: Some(c),
-            w_eval: Some(w_eval),
-            e_eval: Some(e_eval),
-            w: Some(witness.w.clone()),
-            e: Some(witness.e.clone()),
-        };
-        let groth16 = Groth16::<Bn254>::prove(&keys.pk, circuit, rng)
-            .map_err(|_| DeciderError::Unsatisfied)?;
-        let proof = OnChainDeciderProof {
-            digest,
-            w_eval,
-            e_eval,
-            r_w: witness.r_w,
-            r_e: witness.r_e,
-            pi_w,
-            pi_e,
-            groth16,
-        };
-        // Never hand out a proof the contract would reject.
-        if !verify_onchain_decider(params, &keys.vk, &acc, &proof) {
-            return Err(DeciderError::Unsatisfied);
-        }
-        Ok((mask, acc, proof))
-    }
 }
 
 /// The accumulator the contract holds after executing `finalize*` with
@@ -487,7 +374,6 @@ pub enum DeciderError {
     NotKzg,
     /// The accumulated witness does not satisfy the circuit.
     Unsatisfied,
-    Setup,
 }
 
 impl From<FoldError> for DeciderError {
@@ -502,77 +388,8 @@ impl core::fmt::Display for DeciderError {
             Self::Fold(e) => write!(f, "{e}"),
             Self::NotKzg => write!(f, "on-chain decider needs KZG parameters"),
             Self::Unsatisfied => write!(f, "accumulated witness does not satisfy the circuit"),
-            Self::Setup => write!(f, "decider key generation failed"),
         }
     }
-}
-
-#[cfg(feature = "dev-groth16")]
-/// Groth16 keys of the decider circuit of one application circuit.
-pub struct DeciderKeys {
-    pub pk: ProvingKey<Bn254>,
-    pub vk: VerifyingKey<Bn254>,
-}
-
-#[cfg(feature = "dev-groth16")]
-impl DeciderKeys {
-    /// Generates the keys from locally sampled randomness.
-    ///
-    /// **For tests and development only**: the sampled trapdoor allows
-    /// forging proofs. Production keys must come from a multi-party phase-2
-    /// ceremony for this decider circuit.
-    pub fn insecure_for_testing(
-        params: &EvmParams,
-        rng: &mut (impl RngCore + ark_std::rand::CryptoRng),
-    ) -> Result<Self, DeciderError> {
-        let poseidon = llull_folder::transcript::poseidon_config::<Fr>();
-        let circuit = DeciderCircuit::blank(&params.shape, &poseidon);
-        let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, rng)
-            .map_err(|_| DeciderError::Setup)?;
-        Ok(Self { pk, vk })
-    }
-}
-
-#[cfg(feature = "dev-groth16")]
-/// The constant-size proof verified by `finalizeWithProof`.
-#[derive(Clone, Debug)]
-pub struct OnChainDeciderProof {
-    /// `Poseidon(W, E)` of the vectors inside the decider circuit.
-    pub digest: Fr,
-    pub w_eval: Fr,
-    pub e_eval: Fr,
-    pub r_w: Fr,
-    pub r_e: Fr,
-    pub pi_w: G1,
-    pub pi_e: G1,
-    pub groth16: Proof<Bn254>,
-}
-
-#[cfg(feature = "dev-groth16")]
-/// Exactly the checks `finalizeWithProof` performs on the final accumulator.
-pub fn verify_onchain_decider(
-    params: &EvmParams,
-    groth16_vk: &VerifyingKey<Bn254>,
-    acc: &RelaxedR1CSInstance<G1>,
-    proof: &OnChainDeciderProof,
-) -> bool {
-    let Some(tau_g2) = params.tau_g2 else {
-        return false;
-    };
-    let c = decider_point(&params.vk, acc, &proof.digest);
-    let gamma = batch_challenge(&c, &proof.w_eval, &proof.e_eval, &proof.pi_w, &proof.pi_e);
-    // One batched KZG opening of the unblinded commitments.
-    let comm =
-        (acc.comm_w - params.ck.h * proof.r_w) + (acc.comm_e - params.ck.h * proof.r_e) * gamma;
-    let value = proof.w_eval + gamma * proof.e_eval;
-    let pi = proof.pi_w + proof.pi_e * gamma;
-    if !kzg::verify(comm, c, value, pi, tau_g2) {
-        return false;
-    }
-    let mut inputs = alloc::vec![acc.u];
-    inputs.extend_from_slice(&acc.x);
-    inputs.extend([proof.digest, c, proof.w_eval, proof.e_eval]);
-    Groth16::<Bn254>::verify(groth16_vk, &inputs, &proof.groth16).unwrap_or(false)
 }
 
 /// Off-chain decider: checks the succinct proof against the accumulator read

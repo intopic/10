@@ -31,8 +31,6 @@ import {ZenoFees} from "./lib/ZenoFees.sol";
 ///   transparent proof is verified off-chain against the final accumulator
 ///   (`evm-verifier::verify_final`). Such a session is never `decided`.
 ///
-/// The Groth16 decider of early development (mode C) lives in
-/// `dev/ZenoLlullVerifierDevGroth16.sol` and is not part of this contract.
 interface IZenoUniversalDecider {
     function verify(
         bytes32 vk,

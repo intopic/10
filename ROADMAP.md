@@ -75,11 +75,11 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 - [x] Palosje në zinxhir: `verifyFoldedProof(bytes, uint256[])` me 2 `ecMul` + 2 `ecAdd`, sfidë Keccak,
       sesione, zinxhirim `z_out → z_in`, `protocolFee`
 - [x] Angazhime KZG mbi SRS universale (`evm-verifier::kzg`), homomorfike si Pedersen
-- [x] Qarku vendimtar Groth16 (`decider_circuit`): R1CS e relaksuar + `d = Poseidon(W, E)` + `W(c)`, `E(c)`,
+- [x] *(Historik, i hequr më 14 nëntor 2026.)* Qarku vendimtar Groth16 (`decider_circuit`): R1CS e relaksuar + `d = Poseidon(W, E)` + `W(c)`, `E(c)`,
       me `c = keccak(akumulator, d)`. Digjesti `d` e fikson dëshminë brenda Groth16 **para** se të dihet
       pika `c`; pa të, provuesi mund të zëvendësonte dëshminë me një tjetër që përputhet vetëm në `c`
       (e çarë e versionit të parë, e mbyllur me test regresi)
-- [x] `finalizeWithProof`: palosja maskuese + 2 hapje KZG të grupuara + Groth16 në një thirrje
+- [x] *(Historik, i hequr.)* `finalizeWithProof`: palosja maskuese + 2 hapje KZG të grupuara + Groth16 në një thirrje
       çiftëzimi me 6 çifte; sesioni shënohet `decided`
 - [x] Test në EVM lokale me precompile reale: akumulatori në zinxhir = ai i provuesit, 16 falsifikime
       të refuzuara, çelës i panjohur i refuzuar, matje gazi
@@ -123,6 +123,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
   - `universalDecider` është `immutable` (konstruktor); `setUniversalDecider` u hoq
   - `finalizeRecursive` refuzon skalarë jo-kanonikë në `state` dhe `cfProof` (3.64 M gas, +0.08 M)
   - mënyra C (Groth16) jashtë prodhimit: feature `dev-groth16`, kontrata `dev/ZenoLlullVerifierDevGroth16.sol`
+    (më 14 nëntor 2026 u hoq krejt nga kodi; në git deri te `e05e7ce`)
 - [x] **Përshpejtim i provuesit pas riauditimit** (vetëm provuesi; provat dhe transkriptet janë bajt
       për bajt të njëjtat), matur në 4 vCPU para → pas:
   - `sumcheck::prove` dhe `bind` paralel (rayon), `hyperkzg` paralel (kombinimi, palosja e shtresave,
@@ -139,10 +140,7 @@ Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
     kopje për secilën fushë, në të njëjtin skedar) për të katër kontratat. Me modulin si parametër
     gazi rritej ~0.5%; me modul konstant është si para bibliotekës: `finalizeRecursive` **3 644 797**,
     `finalizeUniversal` 2^16 **1 876 462**
-- [ ] Mënyra Groth16 (`finalizeWithProof`) mbetet **vetëm për zhvillim**: çelësat janë specifikë për
-      qarkun dhe `DeciderKeys::insecure_for_testing` i gjeneron me një palë të vetme
-- [ ] `finalizeWithProof` < 300k gas: 6 çifte kushtojnë vetë ~249k (dy hapjet KZG janë tashmë të
-      grupuara në një kontroll)
+- [x] Mënyra Groth16 (`finalizeWithProof`, çelësa për qark me setup të besuar) **u hoq** (14 nëntor 2026)
 - [x] `verifyFoldedProofBatch`: shumë hapa në një transaksion (ruajtja lexohet dhe shkruhet një herë):
       ~22.9k gas për hap (100 hapa = 2.29 M gas), akumulator identik me palosjen një nga një
 - [x] Finalizimi në EVM i IVC-së **rekursive** off-chain (një provë për N hapa, e pavarur nga N): `finalizeRecursive`, **3.57 M gas** (2.93 M ekzekutim + 39 KB calldata) për çdo N (6.17 M → 4.69 M me bashkimin e provave → 3.57 M me vlerësimin uniform të matricave CycleFold; 3.64 M pas forcimit të sigurisë).
@@ -375,7 +373,6 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 | Shkallëzimi me fije (hap 2^16) | 946 ms (1) → 553 ms (2) → 307 ms (4) |
 | `verifyFoldedProof` në EVM | ~74k gas (198k hapi i parë) |
 | `verifyFoldedProofBatch` në EVM | ~22.9k gas për hap (100 hapa në një transaksion) |
-| `finalizeWithProof` në EVM (Groth16, vetëm zhvillim) | ~456k gas, provë 544 bajt |
 | `finalizeUniversal` në EVM (zero setup) | ~0.82 M gas / 6.7 KB (16 kufizime) → ~1.89 M / 21.6 KB (65 536) |
 | Prova ZK e kompresuar | ~9.8–10.8 KB (2^10–2^16 kufizime për hap) |
 | Kompresimi (një herë, në fund) | ~1.4 s në 2^10, ~5.4 s në 2^16; ~21 s në WASM |

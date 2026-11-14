@@ -10,22 +10,17 @@
 //! number generator.
 //!
 //! Usage: `zeno-evm-fixture [--session 0x<64 hex>] [--steps N] [--rounds N]
-//!        [--mode transparent|universal|recursive|onchain] [--ptau FILE]`
+//!        [--mode transparent|universal|recursive] [--ptau FILE]`
 //!
-//! Modes: `transparent` = mode A, `universal` = mode B, `recursive` = mode D,
-//! `onchain` = mode C (Groth16, development only, feature `dev-groth16`).
+//! Modes: `transparent` = on-chain folding decided off-chain, `universal` =
+//! mode B, `recursive` = mode D.
 //!
 //! `recursive` runs the CycleFold IVC for `--steps` steps and emits the
 //! `finalizeRecursive` call (over a 2^20-power reference string: `--ptau`, or
 //! a locally sampled test string).
-//!
-//! `onchain` loads the KZG reference string from a small ceremony-format
-//! `.ptau` file, uses locally generated (test-only) Groth16 decider keys and emits the `finalizeWithProof` flow.
 
 use ark_bn254::Fr;
 use ark_std::rand::{rngs::StdRng, SeedableRng};
-#[cfg(feature = "dev-groth16")]
-use evm_verifier::DeciderKeys;
 use evm_verifier::{
     abi, kzg::Srs, point_words, universal, verify_final, word, EvmParams, OnChainFolder, Word,
 };
@@ -55,7 +50,6 @@ fn main() {
     );
     let mut session = [0u8; 32];
     let mut steps = 5usize;
-    let mut onchain = false;
     let mut universal_mode = false;
     let mut recursive_mode = false;
     let mut rounds_override: Option<usize> = None;
@@ -75,11 +69,6 @@ fn main() {
             "--rounds" => rounds_override = Some(value.parse().expect("number")),
             "--ptau" => ptau_path = Some(value),
             "--mode" => {
-                onchain = value == "onchain";
-                assert!(
-                    !onchain || cfg!(feature = "dev-groth16"),
-                    "--mode onchain (mode C, Groth16, development only) needs the `dev-groth16` feature"
-                );
                 universal_mode = value == "universal";
                 recursive_mode = value == "recursive";
             }
@@ -125,13 +114,6 @@ fn main() {
         let (params, key) = EvmParams::setup_universal(shape, label, &srs);
         circuit_key = Some(key);
         params
-    } else if onchain {
-        let len = shape
-            .num_vars
-            .max(shape.num_constraints)
-            .next_power_of_two();
-        let srs = Srs::from_ptau(PTAU, len, &mut rng).expect("valid .ptau");
-        EvmParams::setup_kzg(shape, label, &srs)
     } else {
         EvmParams::setup(shape, label)
     };
@@ -176,24 +158,6 @@ fn main() {
             32 * proof_words.len(),
             proof_words.len(),
             key_words.len(),
-        );
-        return;
-    }
-    #[cfg(feature = "dev-groth16")]
-    if onchain {
-        let keys = DeciderKeys::insecure_for_testing(&params, &mut rng).expect("decider keys");
-        let key = abi::decider_key(&params, &keys.vk);
-        let (mask, final_acc, proof) = folder
-            .finalize_onchain(&params, &keys, &mut rng)
-            .expect("decider proof");
-        let proof_bytes = 32 * abi::decider_proof_words(&proof).len();
-        println!(
-            "{{\"vk\":\"{}\",\"open\":\"{open}\",\"register\":\"{}\",\"steps\":[{}],\"finalizeWithProof\":{{\"calldata\":\"{}\",\"accumulator\":{},\"proofBytes\":{proof_bytes}}},\"getAccumulator\":\"{get}\"}}",
-            hex(&params.vk),
-            hex(&abi::register_circuit(&params.vk, &key)),
-            step_items.join(","),
-            hex(&abi::finalize_with_proof(&session, &mask, &proof, &key)),
-            acc_json(&final_acc),
         );
         return;
     }
