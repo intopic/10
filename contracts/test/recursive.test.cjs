@@ -19,8 +19,6 @@ const FIXTURE_BIN = process.env.ZENO_EVM_FIXTURE ?? path.join(ROOT, "target/rele
 // The production tool: Circom `.r1cs` / `.wtns` in, calldata out.
 const ZENO_EVM = process.env.ZENO_EVM ?? path.join(ROOT, "target/release/zeno-evm");
 const CIRCOM = path.join(ROOT, "crates/sdk-bindings/fixtures");
-const SERVER_BIN = process.env.ZENO_CLOUD_PROVER ?? path.join(ROOT, "target/release/zenollull-cloud-prover");
-const LICENSE_BIN = path.join(ROOT, "target/release/zeno-license");
 const STEPS = 3;
 const FEE = 2_000_000_000_000n; // decisionFee: per finalizeRecursive
 const MAX_FEE = 10n * FEE;
@@ -191,74 +189,6 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
     console.log("Circom -> EVM (D)    : skipped (set ZENO_PTAU to a 2^20-power .ptau)");
   }
 
-  // ---- Circom -> Cloud API -> EVM (mode D) ------------------------------------
-  // The real service proves the recursive IVC in the background (202 until
-  // done); the client relays its finalizeRecursive call to the contract.
-  if (process.env.ZENO_PTAU) {
-    const { spawn, execFileSync: run } = require("node:child_process");
-    const keys = Object.fromEntries(
-      run(LICENSE_BIN, ["keygen"], { encoding: "utf8" }).trim().split("\n").map((l) => l.split("="))
-    );
-    const token = run(LICENSE_BIN, ["issue", "--customer", "evm-test", "--plan", "recursive", "--days", "1"], {
-      encoding: "utf8",
-      env: { ...process.env, ZENO_LICENSE_PRIVATE_KEY: keys.ZENO_LICENSE_PRIVATE_KEY },
-    }).trim();
-    const port = 19000 + (process.pid % 1000);
-    const server = spawn(SERVER_BIN, [], {
-      env: {
-        ...process.env,
-        ZENO_LICENSE_PUBLIC_KEY: keys.ZENO_LICENSE_PUBLIC_KEY,
-        ZENO_PTAU_PATH: process.env.ZENO_PTAU,
-        ZENO_BIND: `127.0.0.1:${port}`,
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let serverLog = "";
-    server.stderr.on("data", (d) => (serverLog += d));
-    try {
-      const url = `http://127.0.0.1:${port}`;
-      for (let i = 0; ; i++) {
-        try {
-          if ((await fetch(`${url}/healthz`)).ok) break;
-        } catch {}
-        if (i > 1200) throw new Error(`the Cloud Prover did not start:\n${serverLog}`);
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const api = async (route, body) => {
-        const res = await fetch(url + route, { method: "POST", headers: { authorization: `Bearer ${token}` }, body });
-        const text = await res.text();
-        assert.ok(res.status < 300, `${route}: HTTP ${res.status} ${text}`);
-        return { status: res.status, body: JSON.parse(text) };
-      };
-      const t2 = Date.now();
-      const created = (await api("/v1/sessions?z0=3&mode=recursive", fs.readFileSync(path.join(CIRCOM, "step.r1cs")))).body;
-      const witnessCalculator = require(path.join(CIRCOM, "witness_calculator.js"));
-      const calc = await witnessCalculator(fs.readFileSync(path.join(CIRCOM, "step.wasm")));
-      const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-      let z = 3n;
-      for (let i = 0; i < 2; i++) {
-        const secret = BigInt(31 + i);
-        await api(`/v1/fold-step?session=${created.session_id}`, await calc.calculateWTNSBin({ step_in: [z.toString()], secret: secret.toString() }, 0));
-        z = (z * z * z + z + secret) % P;
-      }
-      let fin;
-      for (;;) {
-        fin = await api(`/v1/finalize-evm?session=${created.session_id}`);
-        if (fin.status === 200) break;
-        assert.equal(fin.status, 202);
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      assert.deepEqual(fin.body.zi, [z.toString()]);
-      const resA = await call(fin.body.finalizeRecursive);
-      assert.ok(resA.ok, "the API's finalizeRecursive reverted");
-      const decidedA = await call("0x" + sel["decided(bytes32)"] + fin.body.decided_key.slice(2));
-      assert.equal(BigInt(decidedA.ret), 1n, "the API's claim is decided");
-      console.log(`Circom -> API -> EVM : mode D, 2 steps through the Cloud Prover in ${((Date.now() - t2) / 1000).toFixed(1)} s, finalizeRecursive ${resA.gas} gas, decided`);
-    } finally {
-      server.kill();
-    }
-  }
-
   // ---- Canonical encodings: z_i + r is the same field element as z_i, but
   // it is not a second encoding of the claim --------------------------------
   {
@@ -275,7 +205,7 @@ const intrinsicGas = (data) => 21000n + data.reduce((acc, b) => acc + (b === 0 ?
   // ---- Protocol fee: paid by every decision, capped, withdrawn by the owner ----
   {
     const balance = async (a) => (await evm.stateManager.getAccount(a))?.balance ?? 0n;
-    const decisions = process.env.ZENO_PTAU ? 3n : 1n;
+    const decisions = process.env.ZENO_PTAU ? 2n : 1n;
     assert.equal(await balance(verifier.address), FEE * decisions);
     const stranger = Address.fromString("0x00000000000000000000000000000000000000c3");
     await evm.stateManager.putAccount(stranger, new Account(0n, 10n ** 18n));

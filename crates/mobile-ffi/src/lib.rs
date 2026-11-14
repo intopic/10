@@ -215,6 +215,100 @@ impl OnChainProver {
     }
 }
 
+/// Mode D on a server: a Circom circuit prepared once over a 2^20-power
+/// `.ptau` (parameters and keys), shared by every computation of it.
+/// Server-class: about 2 GB of memory per proof.
+#[derive(uniffi::Object)]
+pub struct RecursiveCircuit {
+    inner: std::sync::Arc<sdk_bindings::recursive::RecursiveCircuit>,
+}
+
+#[uniffi::export]
+impl RecursiveCircuit {
+    #[uniffi::constructor]
+    pub fn new(r1cs: Vec<u8>, ptau: Vec<u8>) -> Result<Self, ZenoError> {
+        Ok(Self {
+            inner: std::sync::Arc::new(sdk_bindings::recursive::RecursiveCircuit::from_files(
+                &r1cs, &ptau,
+            )?),
+        })
+    }
+
+    /// The system's on-chain identity (hex).
+    pub fn system_id(&self) -> String {
+        sdk_bindings::onchain::to_hex(&self.inner.system_id())
+    }
+}
+
+/// What `finalizeRecursive` needs; send `calldata` with `decisionFee` wei.
+#[derive(uniffi::Record)]
+pub struct RecursiveCall {
+    pub calldata: Vec<u8>,
+    pub steps: u64,
+    pub z0: Vec<String>,
+    pub zi: Vec<String>,
+    pub system_id: String,
+    pub decided_key: String,
+}
+
+/// One mode-D computation over a [`RecursiveCircuit`].
+#[derive(uniffi::Object)]
+pub struct RecursiveProver {
+    inner: Mutex<sdk_bindings::recursive::RecursiveProver>,
+}
+
+impl RecursiveProver {
+    fn lock(&self) -> MutexGuard<'_, sdk_bindings::recursive::RecursiveProver> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[uniffi::export]
+impl RecursiveProver {
+    #[uniffi::constructor]
+    pub fn new(
+        license: String,
+        circuit: std::sync::Arc<RecursiveCircuit>,
+        z0: Vec<String>,
+    ) -> Result<Self, ZenoError> {
+        Ok(Self {
+            inner: Mutex::new(sdk_bindings::recursive::RecursiveProver::new(
+                &license,
+                circuit.inner.clone(),
+                &z0,
+            )?),
+        })
+    }
+
+    /// Folds one more step, given its Circom witness (`.wtns`).
+    pub fn prove_step(&self, wtns: Vec<u8>) -> Result<(), ZenoError> {
+        Ok(self.lock().prove_step(&wtns)?)
+    }
+
+    /// Steps folded so far.
+    pub fn steps(&self) -> u64 {
+        self.lock().steps()
+    }
+
+    /// Current state `z_i` as decimal strings.
+    pub fn state(&self) -> Vec<String> {
+        self.lock().state()
+    }
+
+    /// The `finalizeRecursive` call for the steps folded so far.
+    pub fn finalize(&self) -> Result<RecursiveCall, ZenoError> {
+        let call = self.lock().finalize()?;
+        Ok(RecursiveCall {
+            system_id: sdk_bindings::onchain::to_hex(&call.system_id),
+            decided_key: sdk_bindings::onchain::to_hex(&call.decided_key),
+            calldata: call.calldata,
+            steps: call.steps,
+            z0: call.z0,
+            zi: call.zi,
+        })
+    }
+}
+
 /// Verifier for proofs of one step circuit.
 #[derive(uniffi::Object)]
 pub struct Verifier {

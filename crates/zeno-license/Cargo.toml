@@ -1,6 +1,6 @@
 [package]
 name = "zeno-license"
-description = "Signed license keys (EnterpriseLicenseKey) for the Zeno-Llull SDK and Cloud Prover"
+description = "Signed license keys (EnterpriseLicenseKey) for the Zeno-Llull SDK"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

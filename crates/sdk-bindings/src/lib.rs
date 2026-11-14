@@ -7,6 +7,8 @@
 //!   of a proof, state conversions.
 //! * [`onchain`]: mode B on the device — calldata for `ZenoLlullVerifier.sol`
 //!   (folding and `finalizeUniversal`) from `.r1cs` / `.wtns` files.
+//! * [`recursive`]: mode D on a server — one `finalizeRecursive` call for any
+//!   number of steps (about 2 GB of memory per proof; not in WebAssembly).
 //! * [`lib_wasm_ffi`]: the WebAssembly / TypeScript API built on top of it.
 #![forbid(unsafe_code)]
 
@@ -14,6 +16,8 @@ pub mod api;
 pub mod circom;
 pub mod lib_wasm_ffi;
 pub mod onchain;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod recursive;
 
 use circom::{parse_wtns, CircomR1cs, CircuitLimits, SdkError};
 use decider_zk::{CompressedIvcProof, ProofFormatError};

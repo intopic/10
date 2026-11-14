@@ -40,7 +40,7 @@ KPI: koha e palosjes < 50 ms për hap (qark me 2^16 kufizime) — **ende e pa ar
       sintezë pa mbingarkesën e `ark-relations`
 - [x] **MSM me mbledhje afine të grupuara për provuesin** (`llull-folder::msm`, feature
       `batch-affine-msm`, **aktiv si parazgjedhje** në `zeno-ivc`, `decider-zk`, `evm-verifier` dhe
-      `sdk-bindings`, pra edhe në WASM, celular dhe `cloud-prover`; fiket me `--no-default-features`):
+      `sdk-bindings`, pra edhe në WASM dhe celular; fiket me `--no-default-features`):
   - Pippenger me shifra me shenjë; pikat e çdo dritareje renditen sipas kovës dhe çdo kovë mblidhet si
     pemë binare në koordinata afine, me një inversion për çdo raund (truku i Montgomery-t), në copa
     që qëndrojnë në cache L2; Rust i sigurt, pa `unsafe`
@@ -68,7 +68,7 @@ Mënyra A — 100% transparente (off-chain, celular, portofole), mbi çdo cikël
 
 - [x] SNARK pa Trusted Setup dhe pa FFT: dy sum-check (stil Spartan) + IPA mbi vetë gjeneratorët Pedersen
 - [x] `CompressedIvcProof`: 1.46 MB → ~10 KB, e pavarur nga numri i hapave; kufi 16 KiB në CI
-- [x] CLI `zeno-decider`; SDK WASM dhe Cloud Prover nxjerrin këtë provë
+- [x] CLI `zeno-decider`; SDK-ja nxjerr këtë provë
 
 Mënyra B — EVM (`contracts/ZenoLlullVerifier.sol`, BN254):
 
@@ -329,6 +329,10 @@ KPI: memorie maksimale ≤ 512 MB në shfletues/celular — **arritur në WASM**
 - [x] **Ura Circom → EVM** (`zeno-evm key | universal | recursive`): `.r1cs` / `.wtns` → calldata e
       `finalizeUniversal` (B) dhe `finalizeRecursive` (D); teste fund-më-fund në EVM me dëshmi nga
       gjeneruesi i Circom-it; `finalizeRecursive` kthehet menjëherë për një pretendim të vendosur
+- [x] **Fokusi: SDK + kontrata (14 nëntor 2026).** Cloud Prover (`crates/cloud-prover`, `Dockerfile`, testi
+      i tymit, puna e CI-së) u hoq me vendim të pronarit; mënyra D kaloi te SDK-ja e serverit
+      (`sdk_bindings::recursive`, edhe në Python/Kotlin/Swift). Pikat më poshtë për Cloud Prover janë
+      histori: kodi gjendet në git deri te `abd2bb9`
 - [x] **Hapi 3 — verifikim në zinxhir përmes SDK-së dhe API-së**: tarifat `stepFee` (për hap) dhe `decisionFee` (për vendim)
       (`finalize`, `finalizeUniversal`, `finalizeRecursive`) me tavan të pandryshueshëm `maxFee`
       (`contracts/lib/ZenoFees.sol`); `AlreadyDecided` për një pretendim të vendosur (tarifa kthehet);

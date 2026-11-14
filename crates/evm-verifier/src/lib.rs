@@ -61,7 +61,7 @@ pub const TAG_POINT: u64 = 5;
 pub const TAG_BATCH: u64 = 6;
 
 /// Label of the commitment keys of Circom circuits in mode B; part of every
-/// circuit's `vk`. The SDK, the Cloud Prover and `zeno-evm` all use it, so a
+/// circuit's `vk`. The SDK and `zeno-evm` both use it, so a
 /// circuit has the same `vk` whoever proves it.
 pub const CIRCOM_UNIVERSAL_LABEL: &[u8] = b"zeno-llull/evm/universal/v1";
 /// Label of the parameters of Circom circuits in mode D; part of the system

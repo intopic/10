@@ -7,9 +7,8 @@
 //! ```
 //!
 //! Verification needs only the vendor's 32-byte *public* key, so it can run
-//! offline inside an SDK or statelessly inside the Cloud Prover (the token is
-//! the API credential; no key database is required). The private key never
-//! leaves the vendor.
+//! offline inside an SDK; no key database is required. The private key
+//! never leaves the vendor.
 //!
 //! **The vendor key of a build.** SDK builds verify licenses against the key
 //! compiled into them ([`vendor_public_key`]): the hex public key in the

@@ -10,9 +10,11 @@ specifikimi origjinal është *Specifikimi Inxhinierik, Ideja 10*.
 Një motor provash me njohuri zero i tipit IVC (*Incrementally Verifiable
 Computation*) mbi skemën e palosjes Nova: një numër arbitrar hapash
 llogaritjeje `z_{i+1} = F(z_i)` paloset në një akumulator me madhësi konstante,
-pa FFT dhe pa Trusted Setup në hapat e ndërmjetëm. Rreth tij janë ndërtuar tre
-produkte: SDK për shfletues/celular, shërbim cloud me pagesë për provë, dhe
-kontrata verifikuese në EVM.
+pa FFT dhe pa Trusted Setup në hapat e ndërmjetëm. Produkti është **SDK +
+kontrata**: SDK-ja (shfletues, celular, server; Rust, WASM, Swift, Kotlin,
+Python) prodhon provat dhe calldata-n te klienti, dhe kontratat verifikuese në
+EVM vendosin. Nuk ka shërbim cloud: shërbimi i mëparshëm (`cloud-prover`) u
+hoq më 14 nëntor 2026 me vendim të pronarit (gjendet në historinë e git-it).
 
 ## 2. Depoja dhe mënyra e punës
 
@@ -43,9 +45,9 @@ kontrata verifikuese në EVM.
 | `crates/sdk-bindings`, `sdk/wasm` | Hyrje nga Circom (`.r1cs` / `.wtns`), API WebAssembly, paketa `@zenollull/wasm-sdk` (me variant me shumë fije) |
 | `crates/mobile-ffi`, `sdk/native`, `sdk/android` | SDK native me UniFFI: lidhje Swift, Kotlin, Python; paketim AAR dhe XCFramework |
 | `crates/zeno-license` | Çelësa licence të nënshkruar Ed25519 dhe mjeti i shitësit |
-| `crates/cloud-prover`, `Dockerfile` | Shërbimi HTTP me pagesë për provë, autentikim me licencë, matje përdorimi |
+| `crates/zeno-evm` | CLI: calldata për kontratat nga skedarë Circom (B, D), `.ptau` e shkurtuar |
 | `scripts/` | Skriptet e ndërtimit për WASM, SDK native, AAR, XCFramework dhe testi i kontejnerit |
-| `.github/workflows/ci.yml` | 11 punë: lint, teste, WASM, KPI, kontrata, IVC rekursive mbi PPoT 2^20, SDK native, Android, iOS, Cloud Prover |
+| `.github/workflows/ci.yml` | 10 punë: lint, teste, WASM, KPI, kontrata, IVC rekursive mbi PPoT 2^20, SDK native, Android, iOS |
 
 Rreth 8 900 rreshta Rust dhe Solidity, 43 teste Rust plus testet në Node,
 Python dhe EVM.
@@ -70,7 +72,7 @@ janë KZG mbi një `.ptau` publike. Nuk ka çelësa për qark. Kostoja në zinxh
 shfletues, telefon): `ZenoLlullOnChainProver` në WASM dhe `OnChainProver` në
 Swift/Kotlin/Python prodhojnë të njëjtat thirrje pa API, dhe dëshmitë nuk
 largohen nga pajisja; mjafton `.ptau`-ja e shkurtuar e qarkut (`zeno-evm
-trim-ptau`). Edhe përmes Cloud API-së: `mode=universal`.
+trim-ptau`).
 
 **C. Palosje në zinxhir + Groth16 (`finalizeWithProof`).** Vetëm për zhvillim:
 çelësat janë specifikë për qarkun dhe gjenerohen me një palë të vetme. Nuk
@@ -87,8 +89,11 @@ jashtë zinxhirit; kontrata vendos gjendjen përfundimtare me një thirrje, me
 kosto **të pavarur nga N** (3.64 M gas). Reference string: `.ptau` publike me
 2^20 fuqi. Nuk ka çelësa për qark. Sistemi identifikohet me `keccak256(vk
 primar ‖ vk mbyllës ‖ hash i matricave CycleFold)`, që kushdo e rillogarit.
-Nga një qark Circom: `zeno-evm recursive` ose Cloud API me `mode=recursive`
-(jo në pajisje: rreth 2 GB RAM). Një pretendim i vendosur më parë refuzohet me
+Nga një qark Circom: SDK-ja e serverit (`sdk_bindings::recursive`:
+`RecursiveCircuit` + `RecursiveProver`; në Python/Kotlin/Swift me të njëjtat
+emra) ose `zeno-evm recursive`. Vetëm në server (rreth 2 GB RAM për provë):
+urat, rollup-et dhe aplikacionet që agregojnë pretendimet e përdoruesve e
+ekzekutojnë në makinat e tyre. Një pretendim i vendosur më parë refuzohet me
 `AlreadyDecided` pas rreth 8k gaz, kështu që tarifa i kthehet dërguesit.
 
 **Tarifat.** `ZenoLlullVerifier` merr `stepFee` për çdo hap dhe `decisionFee` për çdo
@@ -103,8 +108,8 @@ Konstruktorët: `ZenoLlullVerifier(stepFee, decisionFee, maxFee, decider)`,
 regjistrimin në kontratën tonë.
 
 **Mjeti `zeno-evm`** (`crates/zeno-evm`) është mjeti i
-prodhimit për mënyrat B dhe D: merr të njëjtët skedarë Circom si SDK-ja dhe
-Cloud Prover, kontrollon çdo dëshmi (vazhdimësinë e gjendjes dhe kufizimet)
+prodhimit për mënyrat B dhe D: merr të njëjtët skedarë Circom si SDK-ja,
+kontrollon çdo dëshmi (vazhdimësinë e gjendjes dhe kufizimet)
 para provimit dhe përdor rastësinë e sistemit operativ. `zeno-evm-fixture`
 mbetet mjet testi (farë e fiksuar, jo ZK).
 
@@ -185,40 +190,11 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
   private e të cilit është publike (`zeno-license issue --dev`), dhe e thotë
   këtë (`development_build`). **Ndërtimet e lëshimit duhet ta vendosin
   variablin.** Një kontroll në pajisjen e klientit mund të hiqet duke
-  ndryshuar kodin: mbrojtja reale mbetet ligjore dhe te Cloud Prover.
-- **Cloud Prover.** Licenca kontrollohet para se të lexohet trupi; madhësitë e
-  deklaruara të qarkut kufizohen para çdo alokimi (`ZENO_MAX_WIRES`,
-  `ZENO_MAX_CONSTRAINTS`); punët paralele kufizohen (`ZENO_MAX_JOBS`, 503
-  kur është plot); faturimi bëhet brenda punës, pra edhe kur klienti
-  shkëputet; nëse regjistri nuk shkruhet dot, nuk jepet asgjë. Regjistri
-  dallon ndryshimet në mes, por jo prerjen e fundit apo rishkrimin e plotë:
-  për këto duhet ruajtur diku tjetër `log_head` (nga `GET /v1/usage`).
-  Një rresht i fundit pa `\n` (shkrim i ndërprerë nga një rrëzim, kurrë i
-  konfirmuar) pritet në nisje me paralajmërim; çdo dëmtim tjetër e ndal
-  nisjen. Kuota `max_steps` e licencës zbatohet për sesion (403). Prova e
-  dhënë mbahet `ZENO_PROOF_RETENTION_SECS` (10 min): përsëritja e
-  `finalize-snark` e kthen pa faturim të dytë (`x-zeno-repeated: true`).
-  **Të dhënat e klientit nuk ruhen:** qarqet, dëshmitë dhe gjendjet jetojnë
-  vetëm në memorie gjatë sesionit; kur sesioni mbaron (finalizim, gabim ose
-  pasivitet) provuesi lëshohet dhe çdo dëshmi mbishkruhet me zero, dhe vlerat
-  e telave të një hapi fshihen sapo hapi paloset. Mbetet vetëm përgjigjja (provë
-  ZK ose calldata publike) për `ZENO_PROOF_RETENTION_SECS`; me `0` nuk mbetet
-  asgjë. Regjistri mban vetëm klientin, kohën dhe ngjarjen.
-  Sesionet e të njëjtit `.r1cs` ndajnë parametrat; një detyrë në sfond pastron
-  çdo minutë sesionet joaktive, provat e skaduara dhe qarqet e papërdorura.
-  `GET /metrics` (Prometheus, pa licencë, pa të dhëna klientësh) jep sesionet,
-  punët dhe cache-t: ekspozoje vetëm në rrjetin e operatorit.
-  **Mënyrat EVM** ndizen me `ZENO_PTAU_PATH` (ngarkohet dhe kontrollohet një
-  herë në nisje, `Arc<Srs>` e përbashkët): `POST /v1/sessions?mode=universal`
-  kthen `vk` dhe `open_session`; `POST /v1/finalize-evm?session=ID&onchain=0x…`
-  kthen `verifyFoldedProofBatch` + `finalizeUniversal`. Me `mode=recursive`
-  (2^20 fuqi), `finalize-evm` nis provën në sfond dhe kthen `202` derisa jep
-  `finalizeRecursive` (`ZENO_MAX_RECURSIVE_JOBS`, parazgjedhje 1; rreth 2 GB
-  secila). Faturimi: `proof` për B, `recursive-proof` për D. Sesionet janë në
-  RAM: pas një rinisjeje klienti rifillon (ose vazhdon nga gjendja e ruajtur me
-  SDK-në). Me disa kontejnerë, balancuesi duhet të mbajë afinitet sipas
-  `session`.
-  Shërbimi duhet vënë pas TLS-së, se licenca udhëton si bearer.
+  ndryshuar kodin: mbrojtja reale mbetet ligjore dhe te `decisionFee` në
+  kontratat tona.
+- **Fshirja e sekreteve.** Provuesit e SDK-së mbishkruajnë me zero vlerat e
+  telave të çdo hapi sapo hapi paloset, dhe `wipe()` (automatik në
+  `RecursiveProver` kur lëshohet) fshin dëshmitë e akumuluara.
 - **Formatet e serializuara** (prova `ZLP`+version, gjendja `ZLS`+version)
   kontrollohen me `core_r1cs::layout` para deserializimit: `ark-serialize`
   rezervon memorie sipas gjatësisë së deklaruar, kështu që pa këtë kontroll
@@ -266,7 +242,7 @@ publik `ppot_0080_18.ptau` të ceremonisë Perpetual Powers of Tau.
 6. **Optimizimi i MSM-së** (koha e hapit). MSM-ja me mbledhje afine të grupuara
    është ndërtuar (`llull-folder::msm`, feature `batch-affine-msm`, aktiv si
    parazgjedhje në `zeno-ivc`, `decider-zk`, `evm-verifier` dhe `sdk-bindings`,
-   pra edhe në WASM, celular dhe `cloud-prover`): 1.31–1.57× për MSM-në, −10.6% për hapin IVC 2^16, −8% për
+   pra edhe në WASM dhe celular): 1.31–1.57× për MSM-në, −10.6% për hapin IVC 2^16, −8% për
    provuesin e `finalizeRecursive`, +11 MiB memorie në hap. Përdoret vetëm te
    provuesi; kontrollet e angazhimeve mbeten me arkworks
    (`commit_reference`). SIMD (AVX-512 / NEON) nuk është bërë: kërkon `unsafe`
@@ -326,15 +302,15 @@ cargo test --release -p evm-verifier --test closing_decider --test recursive -- 
 ```
 
 ```bash
-cargo build --release -p evm-verifier -p zeno-evm -p cloud-prover -p zeno-license && node contracts/test/recursive.test.cjs
+cargo build --release -p evm-verifier -p zeno-evm && node contracts/test/recursive.test.cjs
 ```
 
 Të dy testet e EVM-së kalojnë edhe një qark të vërtetë Circom
 (`crates/sdk-bindings/fixtures/step.circom`, dëshmi nga gjeneruesi i Circom-it)
 deri te `finalizeUniversal` dhe `finalizeRecursive` (ky i fundit vetëm me
-`ZENO_PTAU`), dy herë: nëpër `zeno-evm` dhe nëpër Cloud Prover-in e vërtetë
-(`zenollull-cloud-prover` me `ZENO_PTAU_PATH`). Mënyra B nga SDK-ja WASM, si e
-përdor një wallet, testohet te `sdk/wasm/test/onchain.test.cjs` (kërkon
+`ZENO_PTAU`) nëpër `zeno-evm`. Mënyra D nëpër SDK-në e serverit:
+`cargo test --release -p sdk-bindings --test recursive_sdk -- --ignored` (me
+`ZENO_PTAU`). Mënyra B nga SDK-ja WASM, si e përdor një wallet, testohet te `sdk/wasm/test/onchain.test.cjs` (kërkon
 `npm ci --prefix contracts`). Me dorë:
 
 ```bash

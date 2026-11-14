@@ -1,6 +1,6 @@
 //! `zeno-evm` — proves a Circom step circuit for the on-chain verifiers.
 //!
-//! The same `.r1cs` / `.wtns` files as the SDK and the Cloud Prover (mode A),
+//! The same `.r1cs` / `.wtns` files as the SDK,
 //! turned into calldata for the contracts:
 //!
 //! ```text

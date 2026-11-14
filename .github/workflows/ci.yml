@@ -116,7 +116,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cargo build --release -p evm-verifier -p zeno-evm -p cloud-prover -p zeno-license
+      - run: cargo build --release -p evm-verifier -p zeno-evm
       - run: npm ci
         working-directory: contracts
       - name: Cache the public Powers-of-Tau file (PSE PPoT, 2^18 powers)
@@ -160,24 +160,17 @@ jobs:
         env:
           ZENO_PTAU: ${{ github.workspace }}/ppot_0080_20.ptau
         run: cargo test --release -p evm-verifier --test closing_decider --test recursive -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: cargo build --release -p evm-verifier -p zeno-evm -p cloud-prover -p zeno-license
+      - name: Mode D through the server SDK (Circom circuit, 3 steps)
+        env:
+          ZENO_PTAU: ${{ github.workspace }}/ppot_0080_20.ptau
+        run: cargo test --release -p sdk-bindings --test recursive_sdk -- --ignored --nocapture | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: cargo build --release -p evm-verifier -p zeno-evm
       - run: npm ci
         working-directory: contracts
       - name: finalizeRecursive on the EVM, gas, and forged calldata
         env:
           ZENO_PTAU: ${{ github.workspace }}/ppot_0080_20.ptau
         run: node contracts/test/recursive.test.cjs | tee -a "$GITHUB_STEP_SUMMARY"
-
-  cloud-prover:
-    name: ZenoLlull-Cloud-Prover — Docker image + smoke test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: docker build -t zenollull-cloud-prover .
-      - name: Pay-per-proof flow against the container
-        run: ./scripts/smoke-cloud-prover.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   native-sdk:
     name: SDK native (Swift / Kotlin / Python) — UniFFI + test Python

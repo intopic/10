@@ -17,9 +17,9 @@ Gjendja e projektit dhe plani: shih [ROADMAP.md](ROADMAP.md).
 | `crates/evm-verifier` | Provuesi për kontratën: transkript Keccak, kodim ABI, vendimtar jashtë zinxhirit |
 | `contracts` | `ZenoLlullVerifier.sol` (palosje në zinxhir) dhe `ZenoUniversalDecider.sol` (vendimtar universal, zero setup për qark), me test në EVM |
 | `crates/zeno-license` | Çelësa licence të nënshkruar (Ed25519) dhe mjeti i shitësit |
-| `crates/cloud-prover` | Shërbimi HTTP pay-per-proof me autentikim me licencë dhe matje përdorimi; `Dockerfile` |
 | `crates/mobile-ffi` | SDK native: lidhje Swift / Kotlin / Python të gjeneruara me UniFFI |
-| `crates/sdk-bindings` | Hyrje nga Circom (`.r1cs`/`.wtns`) dhe API WebAssembly/TypeScript |
+| `crates/sdk-bindings` | SDK: hyrje nga Circom (`.r1cs`/`.wtns`), mënyra A (provë jashtë zinxhirit), mënyra B në pajisje (`onchain`), mënyra D në server (`recursive`), API WebAssembly/TypeScript |
+| `crates/zeno-evm` | CLI: calldata për kontratat nga skedarë Circom, `.ptau` e shkurtuar |
 | `sdk/wasm` | Paketa NPM `@zenollull/wasm-sdk` me test Node.js |
 | `crates/zeno-ivc` | Qarku rekursiv `F'`, aritmetika jo-native, stepper IVC mbi ciklin 2-kurbësh, CLI |
 
