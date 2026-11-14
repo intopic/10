@@ -106,7 +106,7 @@ Konstruktorët: `ZenoLlullVerifier(stepFee, decisionFee, maxFee, decider)`,
 `ZenoRecursiveVerifier(decider, stepFee, decisionFee, maxFee)`. Kushdo mund të vendosë kopjen e vet pa tarifë; tarifa paguan
 regjistrimin në kontratën tonë.
 
-**Lansimi: vetëm L2.** Tarifat e nisjes janë në `contracts/deploy/l2.json`, në
+**Lansimi: vetëm në Base.** Tarifat e nisjes janë në `contracts/deploy/l2.json`, në
 dollarë: mënyra B `stepFee` 0 dhe `decisionFee` $0.03 (vetëm për provë, sepse
 hapat paguajnë gazin e tyre); mënyra D `decisionFee` $0.10 + `stepFee` $0.0015
 për hap; `maxFee` $50 për të dyja (D e arrin rreth 33k hapa). SDK-ja është falas
@@ -114,8 +114,10 @@ për B dhe D; licenca me pagesë mbetet për përdorimin tregtar të mënyrës A
 vetmja që nuk kalon nga kontrata. `contracts/scripts/deploy.cjs` i kthen në wei
 me çmimin e ETH-it të ditës (`--eth-usd`), vendos të katër kontratat, lexon
 tarifat prapa nga zinxhiri, ia kalon pronësinë një multisig-u (`--owner`) dhe
-shkruan adresat në `contracts/deploy/deployments/<chainId>.json`. Ethereum
-mainnet refuzohet. CI e ekzekuton me `--dry-run` në një EVM lokale:
+shkruan adresat në `contracts/deploy/deployments/<chainId>.json`. Skripti
+pranon vetëm Base (8453) dhe testnet-in Base Sepolia (84532); çdo zinxhir tjetër,
+Ethereum mainnet dhe L2-të e tjera përfshirë, refuzohet. Një zinxhir i ri është
+një vendim që merret më parë dhe pastaj një ndryshim te `CHAINS` në skript. CI e ekzekuton me `--dry-run` në një EVM lokale:
 
 ```bash
 node contracts/scripts/deploy.cjs --dry-run

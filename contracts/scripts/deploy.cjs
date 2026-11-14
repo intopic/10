@@ -5,7 +5,10 @@
 //   ZenoBatchedDecider    -> ZenoRecursiveVerifier(decider, stepFee, decisionFee, maxFee)  (mode D)
 //
 // The fees are written in dollars and converted to wei with the ETH price of
-// the day (--eth-usd). The launch is L2 only: Ethereum mainnet is refused.
+// the day (--eth-usd). The launch is on Base only: every chain other than
+// Base (8453) and its testnet Base Sepolia (84532) is refused, Ethereum
+// mainnet and the other L2s included. Another chain is a decision to take
+// first and then a change here.
 //
 // Dry run (in-process EVM, no keys, no network), as CI runs it:
 //   node scripts/deploy.cjs --dry-run [--eth-usd 3000]
@@ -23,7 +26,17 @@ const { FeeMarketEIP1559Transaction } = require("@ethereumjs/tx");
 const { Address, Account, hexToBytes, bytesToHex, privateToAddress } = require("@ethereumjs/util");
 
 const ROOT = path.join(__dirname, "..");
-const ETHEREUM_MAINNET = 1n;
+/// The only chains this launch deploys to.
+const CHAINS = new Map([
+  [8453n, "Base"],
+  [84532n, "Base Sepolia"],
+]);
+
+function allowedChain(chainId) {
+  const name = CHAINS.get(chainId);
+  if (!name) throw new Error(`chain ${chainId} refused: this launch deploys only on Base (8453) and Base Sepolia (84532)`);
+  return name;
+}
 
 function args() {
   const a = process.argv.slice(2);
@@ -134,6 +147,7 @@ async function localChain() {
   };
   return {
     chainId: 0n,
+    network: "in-process EVM",
     from: from.toString(),
     deploy: async (data) => (await run(undefined, data)).createdAddress.toString(),
     send: async (to, data) => void (await run(Address.fromString(to), data)),
@@ -154,7 +168,7 @@ async function rpcChain(url, key) {
     return body.result;
   };
   const chainId = BigInt(await rpc("eth_chainId"));
-  if (chainId === ETHEREUM_MAINNET) throw new Error("this launch is L2 only: refusing Ethereum mainnet");
+  const network = allowedChain(chainId);
   const secret = hexToBytes(key.startsWith("0x") ? key : "0x" + key);
   const from = new Address(privateToAddress(secret)).toString();
   const common = Common.custom({ chainId }, { baseChain: Chain.Mainnet, hardfork: Hardfork.Cancun });
@@ -179,6 +193,7 @@ async function rpcChain(url, key) {
   };
   return {
     chainId,
+    network,
     from,
     deploy: async (data) => (await transact(undefined, data)).contractAddress,
     send: async (to, data) => void (await transact(to, data)),
@@ -196,13 +211,18 @@ async function main() {
   const f = fees(JSON.parse(fs.readFileSync(a.config, "utf8")), ethUsd);
   const c = compile();
 
+  // The chain lock refuses everything but Base and Base Sepolia.
+  assert.equal(allowedChain(8453n), "Base");
+  assert.equal(allowedChain(84532n), "Base Sepolia");
+  for (const other of [1n, 10n, 137n, 42161n, 11155111n]) assert.throws(() => allowedChain(other), /refused/);
+
   let chain;
   if (a.dryRun) chain = await localChain();
   else {
     if (!process.env.RPC_URL || !process.env.DEPLOYER_KEY) throw new Error("set RPC_URL and DEPLOYER_KEY");
     chain = await rpcChain(process.env.RPC_URL, process.env.DEPLOYER_KEY);
   }
-  console.log(`${a.dryRun ? "dry run (in-process EVM)" : `chain ${chain.chainId}`}, deployer ${chain.from}, ETH = $${ethUsd}`);
+  console.log(`${a.dryRun ? "dry run (in-process EVM)" : `${chain.network} (chain ${chain.chainId})`}, deployer ${chain.from}, ETH = $${ethUsd}`);
 
   const deployed = {};
   for (const step of plan(c, f)) {
@@ -251,6 +271,7 @@ async function main() {
     fs.mkdirSync(dir, { recursive: true });
     const record = {
       chainId: chain.chainId.toString(),
+      network: chain.network,
       ethUsd,
       owner: a.owner ?? chain.from,
       contracts: deployed,
